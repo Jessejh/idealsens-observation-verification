@@ -12,7 +12,7 @@ import base64
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 
 class FakeSupabase:
@@ -102,12 +102,21 @@ class FakeSupabase:
                     rows = json.loads(body or b"[]")
                     rows = rows if isinstance(rows, list) else [rows]
                     existing = state.tables.setdefault(table, [])
+                    # Honour the on_conflict columns rather than assuming "id":
+                    # track_points is keyed on (session_id, seq).
+                    query = parse_qs(urlparse(self.path).query)
+                    conflict = query.get("on_conflict", [None])[0]
+                    keys = conflict.split(",") if conflict else None
                     for row in rows:
-                        match = next((r for r in existing if r.get("id") == row.get("id")), None)
-                        if match is not None and "on_conflict" in urlparse(self.path).query:
+                        match = None
+                        if keys:
+                            match = next(
+                                (r for r in existing
+                                 if all(r.get(k) == row.get(k) for k in keys)), None)
+                        if match is not None:
                             match.update(row)
                         else:
-                            existing.append(row)
+                            existing.append(dict(row))
                     return self._json(201, rows)
 
                 return self._send(404)

@@ -115,8 +115,12 @@ class SupabaseClient:
         return response.json()
 
     def upsert(self, table: str, rows: Sequence[dict], on_conflict: str = "id",
-               chunk_size: int = 500) -> list[dict]:
-        """Insert or update rows, in batches PostgREST will not choke on."""
+               chunk_size: int = 500, returning: str = "representation") -> list[dict]:
+        """Insert or update rows, in batches PostgREST will not choke on.
+
+        Pass ``returning="minimal"`` for bulk writes nobody reads back — a
+        thousand track points echoed over the wire is pure waste.
+        """
         if not rows:
             return []
         out: list[dict] = []
@@ -127,11 +131,11 @@ class SupabaseClient:
                 params={"on_conflict": on_conflict},
                 headers={
                     "Content-Type": "application/json",
-                    "Prefer": "resolution=merge-duplicates,return=representation",
+                    "Prefer": f"resolution=merge-duplicates,return={returning}",
                 },
                 data=json.dumps(batch, default=str),
             ), f"upsert {table}")
-            if response.content:
+            if returning == "representation" and response.content:
                 out.extend(response.json())
         return out
 
