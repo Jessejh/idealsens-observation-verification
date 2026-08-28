@@ -254,6 +254,25 @@ class TestEndToEnd(EndToEndTestCase):
         self.assertLess(len(self.server.requests) - before, 10,
                         "a skip should cost one query, not a re-upload")
 
+    def test_a_different_file_is_not_skipped_by_the_resume_check(self):
+        # The resume check must look up this file's own session, not any
+        # completed session: two chapters differ only by filename.
+        self.run_ingest()
+        other = self.clip_dir / "GX010043.MP4"
+        shutil.copy(self.clip, other)
+        try:
+            result, _ = self.run_ingest(job=self.job())
+            self.assertEqual(result.status, "skipped")
+
+            job = IngestJob(video=other, settings=self.settings,
+                            observations=[observation("obs-1", 9.0)], client=self.client)
+            second, _ = self.run_ingest(job=job)
+            self.assertEqual(second.status, "done")
+            self.assertNotEqual(second.session_id, result.session_id)
+            self.assertEqual(len(self.server.tables["sessions"]), 2)
+        finally:
+            other.unlink(missing_ok=True)
+
     def test_force_reruns_and_still_does_not_duplicate(self):
         self.run_ingest()
         first_ids = {r["id"] for r in self.server.tables["observations"]}

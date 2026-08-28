@@ -15,6 +15,26 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
 
+def _apply_filters(rows: list[dict], raw_path: str) -> list[dict]:
+    """Apply PostgREST-style `column=eq.value` filters to a row set.
+
+    Without this a resume check would see every session rather than the one it
+    asked about, and a file that had never been ingested would look complete.
+    """
+    query = parse_qs(urlparse(raw_path).query)
+    for column, values in query.items():
+        if column in ("select", "on_conflict", "order", "limit", "offset"):
+            continue
+        for value in values:
+            operator, _, wanted = value.partition(".")
+            if operator == "eq":
+                rows = [r for r in rows if str(r.get(column)) == wanted]
+            elif operator == "in":
+                allowed = set(wanted.strip("()").split(","))
+                rows = [r for r in rows if str(r.get(column)) in allowed]
+    return rows
+
+
 class FakeSupabase:
     def __init__(self):
         self.objects: dict[str, bytes] = {}       # "bucket/path" -> bytes
@@ -183,7 +203,8 @@ class FakeSupabase:
                         return self._json(200, {"name": name})
                     return self._json(404, {"error": "not found"})
                 if path.startswith("/rest/v1/"):
-                    return self._json(200, state.tables.get(path[len("/rest/v1/"):], []))
+                    rows = state.tables.get(path[len("/rest/v1/"):], [])
+                    return self._json(200, _apply_filters(rows, self.path))
                 return self._send(404)
 
             def do_DELETE(self):

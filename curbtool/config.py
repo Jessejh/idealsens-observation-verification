@@ -60,6 +60,15 @@ class Settings:
                 data[key] = value
         return Settings(**data)
 
+    def describe(self) -> str:
+        """The settings that change what lands in the database."""
+        return (f"campaign={self.campaign or '(unset)'} "
+                f"clock_offset={self.clock_offset_s:+g}s "
+                f"stop<={self.stop_speed_mps:g}m/s>={self.stop_min_duration_s:g}s "
+                f"frames={self.frame_width}px x{self.max_frames} "
+                f"proxy={self.proxy_source}/{self.proxy_height}p@"
+                f"{self.proxy_bitrate_kbps}k")
+
     def save(self, path: Path = CONFIG_PATH) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(asdict(self), indent=2, sort_keys=True) + "\n")

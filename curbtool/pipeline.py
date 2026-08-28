@@ -31,7 +31,8 @@ from .supabase_io import SupabaseClient, SupabaseError
 
 UTC = timezone.utc
 
-STAGES = ("track", "match", "stops", "frames", "proxy", "upload", "rows")
+# In the order ingest_file runs them.
+STAGES = ("track", "stops", "match", "frames", "proxy", "upload", "rows")
 
 
 class PipelineError(Exception):
@@ -91,6 +92,9 @@ class IngestJob:
     frame_bucket: str = "frames"
     proxy_bucket: str = "proxies"
     force: bool = False
+    # Backfill: reuse frames already sitting in the work folder rather than
+    # decoding the HD file again, when only Supabase needs catching up.
+    reuse_media: bool = False
 
     @property
     def campaign(self) -> str:
@@ -452,16 +456,29 @@ def _extract_all_frames(job: IngestJob, matches: Sequence[Match], frame_dir: Pat
     for match, targets in plans:
         check()
         out_dir = frame_dir / str(match.observation_id)
-        written = media.extract_frames(
-            job.video, targets, out_dir, prefix="f",
-            width=settings.frame_width, quality=settings.frame_quality,
-            should_cancel=lambda: _cancelled(check))
+        written = _existing_frames(out_dir, targets) if job.reuse_media else None
+        if written is None:
+            written = media.extract_frames(
+                job.video, targets, out_dir, prefix="f",
+                width=settings.frame_width, quality=settings.frame_quality,
+                should_cancel=lambda: _cancelled(check))
         for seq, (actual_s, path) in enumerate(written):
             match.frames.append((seq, actual_s - match.window_mid_s, actual_s, path))
         done += len(written)
         report("frames", done, total,
                f"{match.observation.external_id}: {len(written)} frames")
     return done
+
+
+def _existing_frames(out_dir: Path, targets: Sequence[float]
+                     ) -> list[tuple[float, Path]] | None:
+    """Frames already extracted for this observation, if the full set is there."""
+    if not out_dir.is_dir():
+        return None
+    paths = sorted(out_dir.glob("f_*.jpg"))
+    if len(paths) != len(targets):
+        return None
+    return list(zip(targets, paths))
 
 
 def _build_proxy(job: IngestJob, work_dir: Path, report, check,
