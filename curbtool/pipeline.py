@@ -390,8 +390,11 @@ def ingest_file(job: IngestJob, on_progress: ProgressFn = _noop,
             guess = suggest_clock_offset(job.observations, result.started_utc,
                                          result.ended_utc)
             if guess:
-                result.hint = (f"nothing matched, but --clock-offset {guess:+.0f} "
-                               f"({guess / 3600:+.0f} h) would put tags inside this file")
+                seconds, count = guess
+                result.hint = (
+                    f"nothing matched, but --clock-offset {seconds:+.0f} "
+                    f"({seconds / 3600:+.0f} h) would put {count} observation(s) "
+                    "inside this file")
 
         # -- 4. frames ---------------------------------------------------
         result.frames = _extract_all_frames(job, matches, frame_dir, report, check)
@@ -483,11 +486,23 @@ def _existing_frames(out_dir: Path, targets: Sequence[float]
 
 def _build_proxy(job: IngestJob, work_dir: Path, report, check,
                  result: IngestResult) -> Path | None:
-    """Build the playback proxy, from the .LRV where that is allowed and present."""
+    """Build the playback proxy, from the .LRV where that is allowed and present.
+
+    Returns None when no proxy is wanted. Transcoding is the most expensive
+    thing this pipeline does — tens of minutes and several hundred megabytes a
+    chapter — and its value is unproven until a reviewer says the frames are
+    not enough. proxy_source="none" defers that cost rather than paying it up
+    front for all seventeen chapters.
+    """
     settings = job.settings
     out_path = work_dir / f"{Path(job.video).stem}_proxy.mp4"
     lrv = media.find_lrv(job.video)
     result.lrv_found = lrv is not None
+
+    if settings.proxy_source == "none":
+        result.proxy_source = "none"
+        report("proxy", 1, 1, "no proxy (frames only)")
+        return None
 
     if out_path.exists():
         result.proxy_bytes = out_path.stat().st_size

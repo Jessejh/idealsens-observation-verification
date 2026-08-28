@@ -196,7 +196,7 @@ class CurbToolGUI:
         self.vars["proxy_source"] = tk.StringVar()
         ttk.Label(box, text="Proxy from").grid(row=row, column=0, sticky="w", pady=2)
         ttk.Combobox(box, textvariable=self.vars["proxy_source"], state="readonly",
-                     values=("hd", "lrv", "auto"), width=8).grid(
+                     values=("none", "hd", "lrv", "auto"), width=8).grid(
             row=row, column=1, sticky="w", pady=2)
         row += 1
 

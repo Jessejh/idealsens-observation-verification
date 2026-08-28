@@ -309,21 +309,30 @@ def nearest_fix(fixes: Sequence[PhoneFix], utc: datetime,
 
 
 def suggest_clock_offset(observations: Iterable[Observation],
-                         window_start: datetime, window_end: datetime) -> float | None:
-    """Guess a whole-hour clock offset when nothing matched.
+                         window_start: datetime,
+                         window_end: datetime) -> tuple[float, int] | None:
+    """Find the whole-hour shift that would rescue the most observations.
 
     A tagging app that exported local time instead of UTC puts every
-    observation a constant number of hours out. If shifting by a whole hour
-    would drop tags inside this file's window, say so — it costs nothing and it
-    is the single most likely thing to be wrong.
+    observation the same number of hours out — so the useful question is not
+    "does some shift help one row" but "which shift helps the most rows". A
+    single outlier four hours away is a stray tag, not a clock problem, and
+    advising a campaign-wide shift to accommodate it would break everything
+    that currently matches.
+
+    Returns the offset in seconds and how many observations it would bring
+    inside the window, or None if no whole hour helps.
     """
     stamps = [o.utc for o in observations]
     if not stamps:
         return None
+
+    best_hours, best_count = 0, 0
     for hours in range(-14, 15):
         if hours == 0:
             continue
         shift = timedelta(hours=hours)
-        if any(window_start <= stamp + shift <= window_end for stamp in stamps):
-            return hours * 3600.0
-    return None
+        count = sum(1 for stamp in stamps if window_start <= stamp + shift <= window_end)
+        if count > best_count:
+            best_hours, best_count = hours, count
+    return (best_hours * 3600.0, best_count) if best_count else None

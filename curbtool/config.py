@@ -44,7 +44,10 @@ class Settings:
     max_frames: int = 9
 
     # Proxy
-    proxy_source: str = "hd"        # hd | lrv | auto
+    # none | hd | lrv | auto. "none" skips proxy building entirely, which is
+    # what makes a frames-first pass possible: minutes per file instead of
+    # tens of minutes, and nothing to upload but the evidence stills.
+    proxy_source: str = "hd"
     proxy_height: int = 720
     proxy_bitrate_kbps: int = 2500
 

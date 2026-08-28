@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """curbtool CLI — a thin wrapper over curbtool.pipeline.
 
+    python ingest.py check  FOLDER --observations tags.csv        # always start here
     python ingest.py ingest FOLDER --campaign helsinki-2024 --observations tags.csv
     python ingest.py track  GX010042.MP4 --geojson route.json
     python ingest.py backfill FOLDER --campaign helsinki-2024
@@ -26,6 +27,7 @@ from curbtool.media import find_lrv, probe
 from curbtool.observations import ObservationError
 from curbtool.pipeline import IngestJob, Progress, ingest_file
 from curbtool.supabase_io import SupabaseError
+from curbtool.verify import check_campaign
 
 
 def log(message: str) -> None:
@@ -131,8 +133,13 @@ def add_common_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--proxy-height", type=int, help="proxy height in pixels")
     parser.add_argument("--proxy-bitrate", type=int, metavar="KBPS",
                         help="proxy video bitrate")
-    parser.add_argument("--proxy-source", choices=("hd", "lrv", "auto"),
-                        help="transcode from HD, remux the .LRV, or prefer the .LRV")
+    parser.add_argument("--proxy-source", choices=("none", "hd", "lrv", "auto"),
+                        help="none skips video entirely (frames only); hd transcodes; "
+                             "lrv/auto remux the .LRV companion where there is one")
+    parser.add_argument("--no-proxy", dest="proxy_source", action="store_const",
+                        const="none",
+                        help="shorthand for --proxy-source none: extract frames and "
+                             "skip the slow transcode")
     parser.add_argument("--work-dir", help="where frames and proxies are written")
     parser.add_argument("--no-upload", action="store_true",
                         help="process locally without touching Supabase")
@@ -196,6 +203,34 @@ def cmd_backfill(args: argparse.Namespace) -> int:
     args.reuse_media = True
     log("backfill: reusing frames and proxies already in the work folder")
     return cmd_ingest(args)
+
+
+def cmd_check(args: argparse.Namespace) -> int:
+    """Dry-run the matching across the whole campaign. Decodes nothing, writes nothing.
+
+    Run this before every full ingest. It costs a couple of minutes and it is
+    the only cheap way to find out that the clock offset is wrong.
+    """
+    settings = settings_from_args(args)
+    videos: list[Path] = []
+    for target in args.target:
+        videos.extend(find_videos(target))
+    if not videos:
+        log(f"no .MP4 files found in {', '.join(str(t) for t in args.target)}")
+        return 1
+    if not settings.observations_csv:
+        log("--observations is required: there is nothing to check against without it")
+        return 2
+
+    observations, _ = load_inputs(settings)
+    log(f"{len(videos)} file(s), {len(observations)} observation(s) in the CSV")
+    log(settings.describe())
+
+    result = check_campaign(videos, observations, settings,
+                            on_progress=lambda m: log(f"    {m}"))
+    print()
+    print(result.render())
+    return 0 if result.ready else 1
 
 
 def cmd_track(args: argparse.Namespace) -> int:
@@ -315,6 +350,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_backfill.add_argument("--save-settings", action="store_true")
     add_common_arguments(p_backfill)
     p_backfill.set_defaults(func=cmd_backfill)
+
+    p_check = sub.add_parser(
+        "check",
+        help="dry-run the matching across a campaign — decodes nothing, writes nothing")
+    p_check.add_argument("target", nargs="+", help="video file(s) or a folder of them")
+    add_common_arguments(p_check)
+    p_check.set_defaults(func=cmd_check)
 
     p_track = sub.add_parser(
         "track", help="dump one file's telemetry, stops and route (verify first)")

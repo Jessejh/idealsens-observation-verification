@@ -39,23 +39,40 @@ here, and is optional.
 `.env` needs the **`service_role`** key. It bypasses RLS. It is gitignored;
 keep it that way, and never give it to Lovable — Lovable gets the anon key.
 
-## Verify before batching
+## Check before you ingest
 
-Clock offset is the most likely thing to be wrong. Check one file first:
-
-```bash
-python ingest.py track /media/gopro/GX010042.MP4
-```
-
-That prints the telemetry window, the detected stops and where they are. Then
-ingest one file and open one observation in the review UI: the target should
-sit near `delta_s = 0`. A systematic error is fixed for the whole campaign with
-`--clock-offset`.
+`check` matches the whole campaign against every chapter without decoding a
+single frame or writing anything. It takes about as long as reading the files
+off the drive, and it is the only cheap way to discover that the clock offset
+is wrong.
 
 ```bash
-python ingest.py ingest /media/gopro/GX010042.MP4 \
-    --campaign helsinki-2024 --observations tags.csv --gnss phone.csv
+python ingest.py check /media/gopro --observations tags.csv
 ```
+
+It answers three questions: does every observation land inside some chapter,
+does it land during a stop where the target is actually framed, and if not
+would a different `--clock-offset` fix it. It only suggests a shift when most
+of the campaign is unmatched — one stray tag four hours out is a stray tag, not
+a broken clock, and shifting the campaign to accommodate it would break
+everything that currently works.
+
+Fix whatever it reports, then run it again until it says `READY`.
+
+## Then prove it on one file
+
+Numbers matching is not the same as frames showing the problem. Ingest one
+file with no video and no upload, and **look at the JPEGs**:
+
+```bash
+python ingest.py ingest /media/gopro/GX010042.MP4 --campaign helsinki-2024 \
+    --observations tags.csv --no-proxy --no-upload
+open work/helsinki-2024/GX010042/frames/
+```
+
+The frame nearest `delta_s = 0` should show the curb or the pothole the
+operator was pointing at. If it shows the road ahead, or the operator's shoe,
+stop and tune before doing this seventeen times.
 
 ## Run the batch
 
@@ -75,6 +92,21 @@ Pass the **same campaign-wide observation CSV to every run**. Each file matches
 only what falls inside its own time window.
 
 Re-running a completed file is a no-op. Use `--force` to redo one.
+
+**Consider `--no-proxy` for the first full pass.** Transcoding is the most
+expensive thing this pipeline does — tens of minutes and several hundred
+megabytes per chapter — and nobody knows yet whether reviewers need video at
+all. Frames-only gets the city grading the same day. Add video later, without
+redoing anything and without disturbing grading already done:
+
+```bash
+python ingest.py backfill /media/gopro --campaign helsinki-2024 \
+    --observations tags.csv --proxy-source lrv
+```
+
+`backfill` reuses the frames already in the work folder, builds the proxies and
+fills in each session's `proxy_url`. Derived IDs mean observations are updated
+rather than replaced, so reviews stay attached.
 
 ### The summary
 
@@ -110,6 +142,7 @@ phone GNSS CSV ─── averaged position ────────────�
 | `curbtool/media.py` | Frame extraction, proxy transcode, `.LRV` remux |
 | `curbtool/supabase_io.py` | PostgREST rows, storage, resumable uploads |
 | `curbtool/pipeline.py` | `ingest_file()` — one file, end to end |
+| `curbtool/verify.py` | `check` — dry-run the matching, decode nothing |
 | `curbtool/batch.py` | Run a list of files, surviving individual failures |
 | `curbtool/gui.py` | Tkinter batch UI |
 | `ingest.py` | CLI |
@@ -171,7 +204,7 @@ flags win over the file. `python ingest.py settings` prints the current set;
 | `frame_interval_s` | `--frame-interval` | 1.0 | Spacing within a stop window. |
 | `proxy_height` | `--proxy-height` | 720 | |
 | `proxy_bitrate_kbps` | `--proxy-bitrate` | 2500 | |
-| `proxy_source` | `--proxy-source` | `hd` | `hd` transcodes; `lrv`/`auto` remux the companion. |
+| `proxy_source` | `--proxy-source`, `--no-proxy` | `hd` | `none` skips video entirely; `hd` transcodes; `lrv`/`auto` remux the `.LRV` companion. |
 | `work_dir` | `--work-dir` | `work` | Frames, proxies, summaries. Gitignored. |
 | `upload` | `--no-upload` | on | Off processes locally without touching Supabase. |
 
@@ -196,7 +229,7 @@ which is what `--clock-offset` fixes, and what the summary's hint will point at.
 python run_tests.py
 ```
 
-98 core tests plus 17 GUI tests. The GPMF parser runs against synthetic KLV
+112 core tests plus 17 GUI tests. The GPMF parser runs against synthetic KLV
 built to the camera's own layout; the pipeline's end-to-end tests do real
 decoding, real transcoding and real HTTP against an in-process Supabase,
 including a dropped connection mid-upload and a restart; the GUI tests drive
