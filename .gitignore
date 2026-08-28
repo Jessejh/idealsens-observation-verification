@@ -1,0 +1,8 @@
+.env
+work/
+*.pyc
+__pycache__/
+*.MP4
+*.LRV
+*.mp4
+.curbtool.json
