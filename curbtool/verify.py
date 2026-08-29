@@ -52,6 +52,7 @@ class CampaignCheck:
     duplicated: dict[str, list[str]] = field(default_factory=dict)
     clock_offset_hint: float | None = None
     clock_offset_rescues: int = 0
+    cancelled: bool = False
     settings: Settings | None = None
 
     @property
@@ -65,7 +66,8 @@ class CampaignCheck:
     @property
     def ready(self) -> bool:
         """Safe to commit an afternoon to a full ingest?"""
-        return (not self.unmatched
+        return (not self.cancelled
+                and not self.unmatched
                 and any(f.ok for f in self.files)
                 and all(f.ok for f in self.files))
 
@@ -126,6 +128,8 @@ class CampaignCheck:
                          "one chapter — check for overlapping recordings.")
 
         lines.append("")
+        if self.cancelled:
+            lines.append("CANCELLED: only the files above were read.")
         lines.append("READY: a full ingest should account for every observation."
                      if self.ready else
                      "NOT READY: fix the above before spending hours on a full ingest.")
@@ -134,13 +138,21 @@ class CampaignCheck:
 
 def check_campaign(videos: Sequence[Path], observations: Sequence[Observation],
                    settings: Settings,
-                   on_progress: Callable[[str], None] = lambda m: None) -> CampaignCheck:
-    """Match the campaign against every chapter without decoding a single frame."""
+                   on_progress: Callable[[str], None] = lambda m: None,
+                   should_cancel: Callable[[], bool] = lambda: False) -> CampaignCheck:
+    """Match the campaign against every chapter without decoding a single frame.
+
+    Cancelling stops between files and reports on what was read so far, which
+    is still useful — the clock offset shows up in the first chapter.
+    """
     result = CampaignCheck(csv_rows=len(observations), settings=settings)
     offset = timedelta(seconds=settings.clock_offset_s)
     seen: dict[str, list[str]] = {}
 
     for video in videos:
+        if should_cancel():
+            result.cancelled = True
+            break
         on_progress(f"reading {video.name}")
         check = FileCheck(file=video.name)
         try:

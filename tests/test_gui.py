@@ -321,6 +321,107 @@ class TestRunning(GuiTestCase):
 
 
 @unittest.skipUnless(TK_AVAILABLE, f"Tkinter unavailable: {TK_REASON}")
+class TestCheckButton(GuiTestCase):
+    """The dry run, driven from the window rather than the command line."""
+
+    def setUp(self):
+        super().setUp()
+        self.shown = []
+        self.gui_module.messagebox.showwarning = lambda *a, **k: self.shown.append(a)
+        self.gui_module.messagebox.showerror = lambda *a, **k: self.shown.append(a)
+        self.gui_module.messagebox.showinfo = lambda *a, **k: self.shown.append(a)
+        self.csv = self.home / "tags.csv"
+
+    def write_csv(self, offset_hours: float = 0.0):
+        import csv as csv_module
+        with self.csv.open("w", newline="") as handle:
+            writer = csv_module.writer(handle)
+            writer.writerow(["id", "timestamp", "category"])
+            for name, at in (("obs-1", 9.0), ("obs-2", 12.0)):
+                stamp = BASE + timedelta(seconds=at, hours=offset_hours)
+                writer.writerow([name, stamp.isoformat().replace("+00:00", "Z"), "curb"])
+        self.app.vars["observations_csv"].set(str(self.csv))
+
+    def run_check(self):
+        with patch_read_payloads(self.payloads):
+            self.app.check()
+            self.assertTrue(self.wait_for(lambda: self.app.worker is None, timeout=60))
+
+    def test_a_clean_campaign_reports_ready(self):
+        self.app.add_paths([str(self.footage / "GX010042.MP4")])
+        self.write_csv()
+        self.run_check()
+
+        log = self.app.log_text.get("1.0", "end")
+        self.assertIn("2 matched of 2 rows", log)
+        self.assertIn("READY", log)
+        self.assertEqual(self.app.status_var.get(), "ready to ingest")
+
+    def test_a_wrong_clock_offset_is_reported_in_a_dialog(self):
+        self.app.add_paths([str(self.footage / "GX010042.MP4")])
+        self.write_csv(offset_hours=3)      # exported local time, not UTC
+        self.run_check()
+
+        self.assertTrue(self.shown, "a systematic clock error should raise a dialog")
+        self.assertIn("-10800", self.shown[-1][1])
+        self.assertIn("not ready", self.app.status_var.get())
+
+    def test_checking_writes_and_uploads_nothing(self):
+        self.app.add_paths([str(self.footage / "GX010042.MP4")])
+        self.write_csv()
+        work = Path(self.app.settings.work_dir)
+        self.run_check()
+        self.assertFalse(work.exists(), "check must not create the work folder")
+
+    def test_it_refuses_without_an_observation_csv(self):
+        self.app.add_paths([str(self.footage / "GX010042.MP4")])
+        self.app.vars["observations_csv"].set("")
+        self.app.check()
+        self.assertTrue(self.shown)
+        self.assertIsNone(self.app.worker)
+
+    def test_controls_are_disabled_while_checking_and_restored_after(self):
+        self.app.add_paths([str(self.footage / "GX010042.MP4")])
+        self.write_csv()
+        with patch_read_payloads(self.payloads):
+            self.app.check()
+            self.assertEqual(str(self.app.start_button["state"]), "disabled")
+            self.assertEqual(str(self.app.check_button["state"]), "disabled")
+            self.assertEqual(str(self.app.cancel_button["state"]), "normal")
+            self.wait_for(lambda: self.app.worker is None, timeout=60)
+
+        self.assertEqual(str(self.app.start_button["state"]), "normal")
+        self.assertEqual(str(self.app.check_button["state"]), "normal")
+        self.assertEqual(str(self.app.cancel_button["state"]), "disabled")
+
+
+@unittest.skipUnless(TK_AVAILABLE, f"Tkinter unavailable: {TK_REASON}")
+class TestProgressText(unittest.TestCase):
+    """What the per-file bar says about work that never ran."""
+
+    def entry(self, status, fraction):
+        from curbtool.gui import FileEntry
+        e = FileEntry(path=Path("GX010042.MP4"))
+        e.status, e.fraction = status, fraction
+        return e
+
+    def test_a_running_file_shows_a_bar_and_a_percentage(self):
+        text = self.entry("running", 0.42).progress_text
+        self.assertIn("42%", text)
+        self.assertIn("█", text)
+
+    def test_a_finished_file_reads_100_percent(self):
+        self.assertIn("100%", self.entry("done", 1.0).progress_text)
+
+    def test_work_that_never_ran_shows_no_bar(self):
+        # An empty bar against a failed file reads as "0% done" rather than
+        # "did not run", which is the opposite of what happened.
+        for status in ("queued", "skipped", "failed", "cancelled"):
+            self.assertEqual(self.entry(status, 0.0).progress_text, "",
+                             f"{status} should not draw a bar")
+
+
+@unittest.skipUnless(TK_AVAILABLE, f"Tkinter unavailable: {TK_REASON}")
 class TestStageWeighting(unittest.TestCase):
     def test_per_file_progress_never_steps_backwards(self):
         from curbtool.gui import _overall_fraction

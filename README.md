@@ -82,7 +82,8 @@ python ingest.py ingest /media/gopro --campaign helsinki-2024 \
 ```
 
 or open the GUI, which does the same thing with a file list, per-file progress
-and a Cancel button:
+and a Cancel button. Everything the command line does for a campaign is there:
+**Check** runs the same dry run, **Start** runs the ingest.
 
 ```bash
 python ingest.py gui
@@ -229,7 +230,7 @@ which is what `--clock-offset` fixes, and what the summary's hint will point at.
 python run_tests.py
 ```
 
-112 core tests plus 17 GUI tests. The GPMF parser runs against synthetic KLV
+112 core tests plus 25 GUI tests. The GPMF parser runs against synthetic KLV
 built to the camera's own layout; the pipeline's end-to-end tests do real
 decoding, real transcoding and real HTTP against an in-process Supabase,
 including a dropped connection mid-upload and a restart; the GUI tests drive

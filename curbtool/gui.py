@@ -79,7 +79,10 @@ class FileEntry:
 
     @property
     def progress_text(self) -> str:
-        if self.status in (STATUS_QUEUED, STATUS_SKIPPED):
+        # A bar only means something for work that ran. Drawing an empty one
+        # against a failed file reads as "0% done" rather than "did not run".
+        if self.status in (STATUS_QUEUED, STATUS_SKIPPED, STATUS_FAILED,
+                           STATUS_CANCELLED):
             return ""
         filled = int(round(10 * self.fraction))
         return f"{'█' * filled}{'░' * (10 - filled)} {100 * self.fraction:3.0f}%"
@@ -145,7 +148,7 @@ class CurbToolGUI:
             ("duration", "Length", 60, "e"),
             ("lrv", "LRV", 50, "center"),
             ("status", "Status", 80, "w"),
-            ("progress", "Progress", 150, "w"),
+            ("progress", "Progress", 190, "w"),
         ):
             self.tree.heading(column, text=heading)
             self.tree.column(column, width=width, anchor=anchor, stretch=(column == "file"))
@@ -189,7 +192,7 @@ class CurbToolGUI:
         row = self._add_entry_row(box, row, "stop_min_duration_s", "Min stop (s)",
                                   "Shortest stationary period that counts as a stop.")
         row = self._add_entry_row(box, row, "frame_width", "Frame width (px)")
-        row = self._add_entry_row(box, row, "max_frames", "Max frames per observation")
+        row = self._add_entry_row(box, row, "max_frames", "Max frames / observation")
         row = self._add_entry_row(box, row, "proxy_height", "Proxy height (px)")
         row = self._add_entry_row(box, row, "proxy_bitrate_kbps", "Proxy bitrate (kbit/s)")
 
@@ -243,11 +246,16 @@ class CurbToolGUI:
         bar = ttk.Frame(parent)
         bar.pack(fill="x", pady=(8, 4))
 
+        # Check comes first deliberately: it is the cheap dry run that catches a
+        # wrong clock offset before an afternoon is spent on a full ingest.
+        self.check_button = ttk.Button(bar, text="Check", command=self.check)
+        self.check_button.pack(side="left")
         self.start_button = ttk.Button(bar, text="Start", command=self.start)
-        self.start_button.pack(side="left")
+        self.start_button.pack(side="left", padx=4)
         self.cancel_button = ttk.Button(bar, text="Cancel", command=self.cancel, state="disabled")
-        self.cancel_button.pack(side="left", padx=4)
-        ttk.Button(bar, text="Open work folder", command=self.open_work_folder).pack(side="left")
+        self.cancel_button.pack(side="left")
+        ttk.Button(bar, text="Open work folder",
+                   command=self.open_work_folder).pack(side="left", padx=4)
 
         self.status_var = tk.StringVar(value="idle")
         ttk.Label(bar, textvariable=self.status_var).pack(side="right")
@@ -445,8 +453,17 @@ class CurbToolGUI:
     # Running
     # ------------------------------------------------------------------
 
+    def _busy(self) -> bool:
+        return self.worker is not None and self.worker.is_alive()
+
+    def _set_running(self, running: bool) -> None:
+        state = "disabled" if running else "normal"
+        self.start_button.configure(state=state)
+        self.check_button.configure(state=state)
+        self.cancel_button.configure(state="normal" if running else "disabled")
+
     def start(self) -> None:
-        if self.worker is not None and self.worker.is_alive():
+        if self._busy():
             return
         if not self.entries:
             messagebox.showinfo("Nothing to do", "Add some GoPro files first.")
@@ -478,8 +495,7 @@ class CurbToolGUI:
         self._refresh_rows()
 
         self.cancel_event.clear()
-        self.start_button.configure(state="disabled")
-        self.cancel_button.configure(state="normal")
+        self._set_running(True)
         self.status_var.set("running")
 
         force = bool(self.vars["force"].get())
@@ -487,8 +503,62 @@ class CurbToolGUI:
                                        daemon=True)
         self.worker.start()
 
+    def check(self) -> None:
+        """Dry-run the matching. Decodes nothing, writes nothing, uploads nothing."""
+        if self._busy():
+            return
+        if not self.entries:
+            messagebox.showinfo("Nothing to check", "Add some GoPro files first.")
+            return
+
+        settings = self._settings_from_widgets()
+        if not settings.observations_csv:
+            messagebox.showerror(
+                "Observation CSV required",
+                "Choose the observation CSV. There is nothing to check the "
+                "footage against without it.")
+            return
+
+        self.settings = settings
+        self._set_running(True)
+        self.status_var.set("checking — nothing is being written")
+        self.cancel_event.clear()
+        self.worker = threading.Thread(target=self._run_check, args=(settings,),
+                                       daemon=True)
+        self.worker.start()
+
+    def _run_check(self, settings: Settings) -> None:
+        """Worker thread. Posts to the queue; never touches a widget."""
+        from .batch import load_inputs
+        from .verify import check_campaign
+
+        put = self.messages.put
+        try:
+            observations, _ = load_inputs(settings)
+        except (ObservationError, OSError) as exc:
+            put(("log", f"cannot check: {exc}"))
+            put(("checked", None))
+            return
+
+        put(("log", f"checking {len(self.entries)} file(s) against "
+                    f"{len(observations)} observation(s) — no decoding, no writing"))
+        try:
+            result = check_campaign(
+                [e.path for e in self.entries], observations, settings,
+                on_progress=lambda m: put(("log", f"    {m}")),
+                should_cancel=self.cancel_event.is_set)
+        except Exception as exc:
+            put(("log", f"check failed: {exc}"))
+            put(("checked", None))
+            return
+
+        put(("log", ""))
+        for line in result.render().splitlines():
+            put(("log", line))
+        put(("checked", result))
+
     def cancel(self) -> None:
-        if self.worker is not None and self.worker.is_alive():
+        if self._busy():
             self.cancel_event.set()
             self.cancel_button.configure(state="disabled")
             self.status_var.set("cancelling after the current step…")
@@ -586,6 +656,8 @@ class CurbToolGUI:
                         entry.duration_s = duration
                         entry.lrv = has_lrv
                         self._update_row(entry)
+                elif kind == "checked":
+                    self._on_check_done(payload)
                 elif kind == "done":
                     self._on_batch_done(payload)
         except queue.Empty:
@@ -620,10 +692,29 @@ class CurbToolGUI:
         self.progress["value"] = 1000 * progress.fraction
         self.status_var.set(f"{progress.file} — {progress.stage}: {progress.message}")
 
+    def _on_check_done(self, result) -> None:
+        self.worker = None
+        self._set_running(False)
+        self.progress["value"] = 0
+        if result is None:
+            self.status_var.set("check failed — see the log")
+            return
+        self.status_var.set("ready to ingest" if result.ready
+                            else "not ready — see the log")
+        if not result.ready and result.clock_offset_hint:
+            hours = result.clock_offset_hint / 3600
+            messagebox.showwarning(
+                "Clock offset looks wrong",
+                f"{result.matched_count} of {result.csv_rows} observations matched "
+                f"a chapter.\n\nSetting the clock offset to "
+                f"{result.clock_offset_hint:+.0f} s ({hours:+.0f} h) would rescue "
+                f"{result.clock_offset_rescues} of the {len(result.unmatched)} "
+                "missing.\n\nThe tagging app most likely exported local time "
+                "rather than UTC.")
+
     def _on_batch_done(self, summary: BatchSummary) -> None:
         self.worker = None
-        self.start_button.configure(state="normal")
-        self.cancel_button.configure(state="disabled")
+        self._set_running(False)
         self.progress["value"] = 0
         self.status_var.set("idle")
 
