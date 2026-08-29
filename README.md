@@ -81,13 +81,19 @@ python ingest.py ingest /media/gopro --campaign helsinki-2024 \
     --observations tags.csv --gnss phone.csv --save-settings
 ```
 
-or open the GUI, which does the same thing with a file list, per-file progress
-and a Cancel button. Everything the command line does for a campaign is there:
-**Check** runs the same dry run, **Start** runs the ingest.
+or open the UI, which does the same thing with buttons:
 
 ```bash
-python ingest.py gui
+python ingest.py web      # browser UI (recommended)
+python ingest.py gui      # desktop window, needs Tkinter
 ```
+
+`web` starts a small server on this machine and opens a page in your browser.
+**Check** runs the dry run, **Start** runs the ingest, **Cancel** stops between
+files, and any failure appears as a numbered code with what it means and what
+to do about it. Nothing leaves the machine: the server binds to 127.0.0.1, every
+request must carry a token minted at startup, non-loopback Host headers are
+refused, and the `service_role` key is never sent to the page.
 
 Pass the **same campaign-wide observation CSV to every run**. Each file matches
 only what falls inside its own time window.
@@ -146,6 +152,9 @@ phone GNSS CSV ─── averaged position ────────────�
 | `curbtool/verify.py` | `check` — dry-run the matching, decode nothing |
 | `curbtool/batch.py` | Run a list of files, surviving individual failures |
 | `curbtool/gui.py` | Tkinter batch UI |
+| `curbtool/webui.py` | Local server behind the browser UI |
+| `curbtool/web/index.html` | The browser UI itself |
+| `curbtool/errors.py` | Error codes: what failed, what it means, what to do |
 | `ingest.py` | CLI |
 
 ### Decisions worth not re-litigating
@@ -230,7 +239,8 @@ which is what `--clock-offset` fixes, and what the summary's hint will point at.
 python run_tests.py
 ```
 
-112 core tests plus 25 GUI tests. The GPMF parser runs against synthetic KLV
+150 tests: the pipeline, the web UI's HTTP surface and guards, and the
+desktop window. The GPMF parser runs against synthetic KLV
 built to the camera's own layout; the pipeline's end-to-end tests do real
 decoding, real transcoding and real HTTP against an in-process Supabase,
 including a dropped connection mid-upload and a restart; the GUI tests drive
@@ -247,6 +257,25 @@ the media paths run against generated clips, but no HERO5 footage has been
 through this. That is the first thing to do — see *Verify before batching*.
 
 ---
+
+## Error codes
+
+Every failure the operator can see has a stable code, a plain-language meaning
+and a next action — `E102` beats "telemetry track has no GPS fixes at quality
+>= 2" when you are holding a camera card. The UI shows them in full; the codes
+are defined in `curbtool/errors.py`.
+
+| Range | Area |
+|---|---|
+| `E0xx` | Setup and configuration |
+| `E1xx` | Telemetry — the GoPro's own GPS track |
+| `E2xx` | Inputs — the observation CSV and phone log |
+| `E3xx` | Media — decoding, frames, proxies |
+| `E4xx` | Supabase — storage and database |
+| `E9xx` | Unclassified; the raw error is always kept |
+
+Codes are stable once published: one may end up in an email to whoever picks
+this up next.
 
 ## Gotchas
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """curbtool CLI — a thin wrapper over curbtool.pipeline.
 
+    python ingest.py web                                          # buttons for all of it
     python ingest.py check  FOLDER --observations tags.csv        # always start here
     python ingest.py ingest FOLDER --campaign helsinki-2024 --observations tags.csv
     python ingest.py track  GX010042.MP4 --geojson route.json
@@ -304,6 +305,12 @@ def cmd_track(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_web(args: argparse.Namespace) -> int:
+    """Serve the browser UI on this machine only."""
+    from curbtool.webui import main as web_main
+    return web_main(port=args.port, open_browser=not args.no_browser)
+
+
 def cmd_gui(args: argparse.Namespace) -> int:
     try:
         from curbtool.gui import main as gui_main
@@ -366,7 +373,15 @@ def build_parser() -> argparse.ArgumentParser:
     add_common_arguments(p_track)
     p_track.set_defaults(func=cmd_track)
 
-    p_gui = sub.add_parser("gui", help="open the batch GUI")
+    p_web = sub.add_parser(
+        "web", help="open the browser UI (recommended — no Tkinter needed)")
+    p_web.add_argument("--port", type=int, default=0,
+                       help="port to listen on (default: any free port)")
+    p_web.add_argument("--no-browser", action="store_true",
+                       help="print the address instead of opening a browser")
+    p_web.set_defaults(func=cmd_web)
+
+    p_gui = sub.add_parser("gui", help="open the desktop window (Tkinter)")
     p_gui.set_defaults(func=cmd_gui)
 
     p_settings = sub.add_parser("settings", help="show or save persisted settings")

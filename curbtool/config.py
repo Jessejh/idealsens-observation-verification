@@ -72,17 +72,22 @@ class Settings:
                 f"proxy={self.proxy_source}/{self.proxy_height}p@"
                 f"{self.proxy_bitrate_kbps}k")
 
-    def save(self, path: Path = CONFIG_PATH) -> None:
+    def save(self, path: Path | None = None) -> None:
+        # Resolved at call time, not bound as a default at import time: a
+        # default argument would freeze the path and silently ignore any later
+        # change to CONFIG_PATH.
+        path = Path(path) if path is not None else CONFIG_PATH
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(asdict(self), indent=2, sort_keys=True) + "\n")
 
     @classmethod
-    def load(cls, path: Path = CONFIG_PATH) -> "Settings":
+    def load(cls, path: Path | None = None) -> "Settings":
         """Load saved settings, ignoring keys this version no longer knows.
 
         A settings file written by an older build must never stop the tool from
         starting; unknown keys are dropped and missing ones take their default.
         """
+        path = Path(path) if path is not None else CONFIG_PATH
         if not path.exists():
             return cls()
         try:
