@@ -14,6 +14,9 @@ Ships once, gets thrown away, the next campaign gets a new tool.
 
 ---
 
+**New here? Read [QUICKSTART.md](QUICKSTART.md)** — one chapter, no database,
+half an hour, and an answer to whether the frames show the right thing.
+
 ## Install
 
 ```bash
@@ -110,6 +113,10 @@ python ingest.py ingest /media/gopro/GX010042.MP4 --campaign helsinki-2024 \
     --observations tags.csv --no-proxy --no-upload
 open work/helsinki-2024/GX010042/frames/
 ```
+
+Folders are named `001_09-24-06_poor_surface` — ordered by time, stamped with
+the clock, named with the category — so the right one is findable while
+browsing. Storage keys on the observation's UUID; nobody has to read that.
 
 The frame nearest `delta_s = 0` should show the curb or the pothole the
 operator was pointing at. If it shows the road ahead, or the operator's shoe,

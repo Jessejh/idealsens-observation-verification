@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -456,9 +457,9 @@ def _extract_all_frames(job: IngestJob, matches: Sequence[Match], frame_dir: Pat
 
     report("frames", 0, total, f"extracting {total} frames from {len(plans)} observations")
     done = 0
-    for match, targets in plans:
+    for index, (match, targets) in enumerate(plans, start=1):
         check()
-        out_dir = frame_dir / str(match.observation_id)
+        out_dir = frame_dir / _frame_folder(index, match)
         written = _existing_frames(out_dir, targets) if job.reuse_media else None
         if written is None:
             written = media.extract_frames(
@@ -471,6 +472,20 @@ def _extract_all_frames(job: IngestJob, matches: Sequence[Match], frame_dir: Pat
         report("frames", done, total,
                f"{match.observation.external_id}: {len(written)} frames")
     return done
+
+
+def _frame_folder(index: int, match: Match) -> str:
+    """A folder name someone can read while browsing.
+
+    The database keys on the observation's UUID, but nobody scanning a work
+    folder for "the pothole around 09:24" can use one. Ordered by time,
+    stamped with the clock, and named with the category, so the right folder is
+    findable without opening anything.
+    """
+    stamp = match.observation.utc.strftime("%H-%M-%S")
+    category = re.sub(r"[^A-Za-z0-9_-]+", "-",
+                      (match.observation.category or "obs")).strip("-")[:28]
+    return f"{index:03d}_{stamp}_{category or 'obs'}"
 
 
 def _existing_frames(out_dir: Path, targets: Sequence[float]
