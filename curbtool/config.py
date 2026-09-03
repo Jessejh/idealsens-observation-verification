@@ -47,12 +47,26 @@ class Settings:
     max_frames: int = 9
 
     # Proxy
-    # none | hd | lrv | auto. "none" skips proxy building entirely, which is
-    # what makes a frames-first pass possible: minutes per file instead of
-    # tens of minutes, and nothing to upload but the evidence stills.
-    proxy_source: str = "hd"
+    # none | hd | lrv | auto.
+    #
+    # Defaults to "none" — frames only. Transcoding is by far the most
+    # expensive thing this pipeline does (tens of minutes and several hundred
+    # megabytes a chapter) and whether reviewers need video at all is unproven
+    # until one of them tries to grade from the stills. Video is added later
+    # with `backfill`, which reuses the frames already on disk and leaves
+    # grading untouched, so nothing is lost by waiting.
+    proxy_source: str = "none"
     proxy_height: int = 720
     proxy_bitrate_kbps: int = 2500
+    # auto probes the machine's hardware encoders (Intel QSV, NVENC, AMF) and
+    # falls back to libx264; "software" forces libx264; a codec name forces it.
+    proxy_encoder: str = "auto"
+    # 0 keeps the source frame rate. 15 is ample for "where was I" and roughly
+    # halves the scale-and-encode work.
+    proxy_fps: int = 0
+    # Off: decoding and re-encoding the AAC track for a whole chapter is not
+    # free, and nobody grades kerb damage by ear.
+    proxy_audio: bool = False
 
     # Output
     work_dir: str = "work"

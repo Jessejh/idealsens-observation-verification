@@ -327,10 +327,10 @@ dialog::backdrop { background: rgba(0,0,0,0.45); }
       <div class="field">
         <label for="s-proxy_source">Video</label>
         <select id="s-proxy_source" data-setting="proxy_source">
-          <option value="none">none — frames only</option>
-          <option value="lrv">lrv — remux (fast)</option>
-          <option value="auto">auto — lrv if present</option>
-          <option value="hd">hd — transcode (slow)</option>
+          <option value="none">none — frames only (~1 min/chapter)</option>
+          <option value="lrv">lrv — camera's own copy (seconds)</option>
+          <option value="auto">auto — lrv, else transcode</option>
+          <option value="hd">hd — full transcode (10–20 min/chapter)</option>
         </select>
       </div>
       <div class="field">
@@ -353,6 +353,7 @@ dialog::backdrop { background: rgba(0,0,0,0.45); }
       <input type="checkbox" id="s-upload" data-setting="upload">
       Upload to Supabase <span class="badge" id="sb-badge">…</span>
     </label>
+    <p class="hint" id="proxy-warn" hidden></p>
     <label class="check">
       <input type="checkbox" id="opt-force">
       Re-process files already marked complete
@@ -476,6 +477,19 @@ function render(state) {
     : state.summary ? "finished" : "idle";
   $("activity").textContent = state.activity || "";
   $("bar").style.width = Math.round(state.progress * 100) + "%";
+
+  // Say out loud what a full transcode will cost before Start is pressed.
+  const source = state.settings.proxy_source;
+  const warn = $("proxy-warn");
+  if (source === "hd" && state.files.length > 1) {
+    warn.hidden = false;
+    warn.style.color = "var(--warn)";
+    warn.textContent = `Transcoding ${state.files.length} chapters from HD will take `
+      + `hours. "none" extracts the frames in about a minute each, and video can be `
+      + `added later with backfill without redoing them.`;
+  } else {
+    warn.hidden = true;
+  }
 
   const sb = $("sb-badge");
   sb.textContent = state.supabase.configured ? "configured" : "not configured";

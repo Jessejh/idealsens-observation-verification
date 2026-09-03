@@ -437,8 +437,13 @@ class Telemetry:
 def parse_telemetry(path: str | Path, min_fix: int = MIN_FIX) -> Telemetry:
     """Read and parse the telemetry of one GoPro file."""
     payloads = read_payloads(path)
-    samples = parse_payloads(payloads, min_fix=min_fix)
-    total = len(parse_payloads(payloads, min_fix=0)) if min_fix > 0 else len(samples)
+    # One parse, not two. This used to run the whole KLV/struct unpack a second
+    # time at min_fix=0 purely to count how many samples the first pass had
+    # dropped — doubling the parse cost of every chapter for one number.
+    all_samples = parse_payloads(payloads, min_fix=0)
+    samples = ([s for s in all_samples if s.fix < 0 or s.fix >= min_fix]
+               if min_fix > 0 else all_samples)
+    total = len(all_samples)
     device = None
     kind = ""
     for _, _, data in payloads[:4]:

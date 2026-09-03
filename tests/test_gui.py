@@ -13,6 +13,7 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -75,11 +76,26 @@ BASE = datetime(2024, 6, 1, 8, 0, 0, tzinfo=UTC)
 def tearDownModule():
     """Destroy the shared interpreter while its variables are still collectable.
 
-    Everything Tk must be gone before a later test module starts threads: a
-    stray Tk object finalised on a worker thread aborts the whole process with
-    Tcl_AsyncDelete.
+    Everything Tk must be gone before a later test module starts threads, and
+    before the interpreter shuts down: a stray Tk object finalised on any
+    thread other than the one that created the Tcl interpreter aborts the whole
+    process with "Tcl_AsyncDelete: async handler deleted by the wrong thread".
+
+    The GUI starts daemon threads of its own — the background probe, the batch
+    worker — so those are waited out first. A daemon thread still running at
+    interpreter exit is exactly what triggers the abort, and it makes the
+    failure intermittent, which is worse than making it certain.
     """
     global _ROOT
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        alive = [t for t in threading.enumerate()
+                 if t is not threading.main_thread() and t.is_alive()]
+        if not alive:
+            break
+        for thread in alive:
+            thread.join(timeout=1)
+
     gc.collect()
     if _ROOT is not None:
         try:
@@ -279,17 +295,40 @@ class TestRunning(GuiTestCase):
             self.assertIn("done", self.app.tree.item(str(entry.path), "values"))
 
     def test_cancel_stops_the_batch_before_the_second_file(self):
-        with patch_read_payloads(self.payloads):
+        # The first file is held open until Cancel is pressed. Racing a real
+        # ingest is no longer possible now that a frames-only chapter finishes
+        # in well under a second — and a timing race would be a flaky test
+        # rather than a check that Cancel is wired up.
+        from curbtool.pipeline import Cancelled as PipelineCancelled
+
+        started = threading.Event()
+        real_ingest = self.gui_module.ingest_file
+        seen = []
+
+        def blocking_ingest(job, on_progress=None, should_cancel=None, **kwargs):
+            seen.append(job.video.name)
+            started.set()
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                if should_cancel is not None and should_cancel():
+                    raise PipelineCancelled(f"{job.video.name}: cancelled")
+                time.sleep(0.02)
+            raise AssertionError("cancel never reached the worker")
+
+        self.gui_module.ingest_file = blocking_ingest
+        try:
             self.app.start()
-            # Let the first file get going, then cancel as the operator would.
-            self.wait_for(lambda: any(e.status == "running" for e in self.app.entries),
-                          timeout=60)
+            self.assertTrue(started.wait(timeout=30), "the worker never started")
             self.app.cancel()
-            finished = self.wait_for(lambda: self.app.worker is None, timeout=120)
+            finished = self.wait_for(lambda: self.app.worker is None, timeout=60)
+        finally:
+            self.gui_module.ingest_file = real_ingest
 
         self.assertTrue(finished, "cancel must actually stop the worker")
-        self.assertTrue(any(e.status in ("cancelled", "queued") for e in self.app.entries),
-                        "at least one file should not have completed")
+        self.assertEqual(len(seen), 1, "the batch must not move on to the next file")
+        statuses = [e.status for e in self.app.entries]
+        self.assertIn("cancelled", statuses)
+        self.assertIn("queued", statuses, "the untouched file stays queued")
         self.assertEqual(str(self.app.start_button["state"]), "normal")
 
     def test_one_failing_file_does_not_abort_the_batch(self):

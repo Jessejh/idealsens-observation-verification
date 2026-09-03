@@ -79,10 +79,11 @@ py ingest.py ingest D:\footage\GX010042.MP4 ^
    --campaign parnu-2026 ^
    --observations data\parnu-observations-2026-08-26_27.csv ^
    --gnss data\parnu-observations-2026-08-26_27.csv ^
-   --no-proxy --no-upload
+   --no-upload
 ```
 
-`--gnss` with the same file is deliberate: it carries a timestamp, coordinates
+Video is off by default, so this only cuts the stills — about a minute a
+chapter. `--gnss` with the same file is deliberate: it carries a timestamp, coordinates
 and an accuracy per row, which is exactly a phone position log — and at a
 median 3.3 m it beats the camera's own fix.
 
@@ -106,6 +107,7 @@ show the road ahead, stop and tune:
 | Stops being missed entirely | `--stop-min-duration 2` (lower it) |
 | Too few frames per spot | `--max-frames 15` |
 | Want them sharper | `--frame-width 1920` |
+| Curious where the time goes | `py tools\bench.py D:\footage\GX010042.MP4` |
 
 Re-run the same command with `--force` after each change.
 
@@ -127,6 +129,20 @@ Errors carry a code — `E102`, `E201`, `E303`. Each says what it means and what
 to do next. The ranges are in README.md; the full table is in
 `curbtool/errors.py`.
 
+## If you do want video later
+
+```
+py ingest.py backfill D:\footage --campaign parnu-2026 ^
+   --observations data\parnu-observations-2026-08-26_27.csv ^
+   --proxy-source lrv
+```
+
+`lrv` uses the copy the camera already wrote — seconds a chapter. It reuses the
+frames on disk and leaves grading untouched. Only reach for `--proxy-source hd`
+if a reviewer says the low-resolution version is genuinely too coarse; that is
+10–20 minutes a chapter. Run `tools/bench.py --proxy` first to see what it
+would actually cost on your machine.
+
 ## Not yet
 
-Supabase, proxies, the review UI. None of it matters until step 6 looks right.
+Supabase, video, the review UI. None of it matters until step 6 looks right.

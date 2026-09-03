@@ -168,6 +168,9 @@ class EndToEndTestCase(unittest.TestCase):
             work_dir=str(self.tmp / "work"),
             max_frames=3,
             frame_width=640,
+            # Video is off by default now, so the cases that are *about* the
+            # proxy have to ask for it. TestProxyDefaults covers the default.
+            proxy_source="hd",
             proxy_height=240,
             proxy_bitrate_kbps=400,
         )
@@ -333,6 +336,58 @@ class TestEndToEnd(EndToEndTestCase):
         self.run_ingest(job=self.job(force=True))
         # The object is already there at the same size, so nothing is re-sent.
         self.assertEqual(len(self.server.uploads), uploads_before)
+
+
+class TestProxyDefaults(EndToEndTestCase):
+    """Video is the expensive thing. It must never happen unasked."""
+
+    def setUp(self):
+        super().setUp()
+        self.settings = self.settings.merged(proxy_source=Settings().proxy_source)
+
+    def test_the_default_builds_no_video_at_all(self):
+        result, _ = self.run_ingest()
+        self.assertEqual(result.status, "done")
+        self.assertGreater(result.frames, 0, "frames are still extracted")
+        self.assertEqual(result.proxy_bytes, 0)
+        self.assertEqual(result.proxy_source, "none")
+        self.assertEqual([k for k in self.server.objects if k.startswith("proxies/")], [])
+        work = Path(self.settings.work_dir) / "helsinki-2024" / "GX010042"
+        self.assertEqual(list(work.glob("*_proxy.mp4")), [],
+                         "nothing should have been transcoded")
+
+    def test_lrv_without_a_companion_does_not_transcode(self):
+        # "lrv" means the camera's own copy, which costs seconds. Falling back
+        # to a full HD transcode turns that into twenty minutes unasked.
+        self.settings = self.settings.merged(proxy_source="lrv")
+        result, _ = self.run_ingest()
+        self.assertEqual(result.status, "done")
+        self.assertEqual(result.proxy_source, "none")
+        self.assertEqual(result.proxy_bytes, 0)
+        self.assertFalse(result.lrv_found)
+
+    def test_lrv_with_a_companion_is_stream_copied(self):
+        lrv = self.clip.with_suffix(".LRV")
+        shutil.copy(self.clip, lrv)
+        try:
+            self.settings = self.settings.merged(proxy_source="lrv")
+            result, _ = self.run_ingest()
+            self.assertEqual(result.proxy_source, "lrv")
+            self.assertGreater(result.proxy_bytes, 0)
+        finally:
+            lrv.unlink(missing_ok=True)
+
+    def test_auto_falls_back_to_hd_when_there_is_no_lrv(self):
+        self.settings = self.settings.merged(proxy_source="auto")
+        result, _ = self.run_ingest()
+        self.assertEqual(result.proxy_source, "hd")
+        self.assertGreater(result.proxy_bytes, 0)
+
+    def test_the_summary_names_the_video_path_that_ran(self):
+        result, _ = self.run_ingest()
+        summary = BatchSummary(campaign="helsinki-2024", csv_rows=2)
+        summary.add(result)
+        self.assertIn("none", summary.render())
 
 
 class TestBatchSummary(unittest.TestCase):

@@ -123,6 +123,7 @@ class IngestResult:
     frames: int = 0
     proxy_bytes: int = 0
     proxy_source: str = ""
+    proxy_encoder: str = ""
     lrv_found: bool = False
     uploaded: bool = False
     elapsed_s: float = 0.0
@@ -358,6 +359,10 @@ def ingest_file(job: IngestJob, on_progress: ProgressFn = _noop,
         result.device = telemetry.device
         result.started_utc = telemetry.first_utc
         result.ended_utc = telemetry.last_utc
+        # Kept deliberately, despite the telemetry already carrying a duration:
+        # this is the only point that opens the video itself, and so the only
+        # thing that notices a truncated or corrupt chapter before the run
+        # commits to it. It reads the header, not the 3 GB.
         info = media.probe(video)
         result.duration_s = info.duration_s or telemetry.duration_s
         report("track", 1, 1,
@@ -401,7 +406,7 @@ def ingest_file(job: IngestJob, on_progress: ProgressFn = _noop,
         result.frames = _extract_all_frames(job, matches, frame_dir, report, check)
 
         # -- 5. proxy ----------------------------------------------------
-        proxy_path = _build_proxy(job, work_dir, report, check, result)
+        proxy_path = _build_proxy(job, work_dir, report, check, result, info)
 
         # -- 6 & 7. upload and rows -------------------------------------
         if settings.upload and job.client is not None:
@@ -443,34 +448,65 @@ def _completed_session(client: SupabaseClient, session_uuid: uuid.UUID) -> dict 
 
 def _extract_all_frames(job: IngestJob, matches: Sequence[Match], frame_dir: Path,
                         report, check) -> int:
-    """Cut evidence frames for every match, reporting per frame across the file."""
+    """Cut evidence frames for every match in a single pass over the file.
+
+    One open and one forward decode for the whole chapter. This used to be one
+    open, one seek and one decode run *per observation*, which on a 3 GB
+    chapter with twenty observations meant opening the file twenty times.
+    """
+    check()
     settings = job.settings
-    plans: list[tuple[Match, list[float]]] = []
-    for match in matches:
-        targets = media.frame_times(match.window_start_s, match.window_end_s,
-                                    settings.frame_interval_s, settings.max_frames)
-        plans.append((match, targets))
-    total = sum(len(t) for _, t in plans)
+    plans = [(match,
+              media.frame_times(match.window_start_s, match.window_end_s,
+                                settings.frame_interval_s, settings.max_frames),
+              frame_dir / _frame_folder(index, match))
+             for index, match in enumerate(matches, start=1)]
+    total = sum(len(targets) for _, targets, _ in plans)
     if total == 0:
         report("frames", 1, 1, "no observations in this file")
         return 0
 
-    report("frames", 0, total, f"extracting {total} frames from {len(plans)} observations")
-    done = 0
-    for index, (match, targets) in enumerate(plans, start=1):
-        check()
-        out_dir = frame_dir / _frame_folder(index, match)
-        written = _existing_frames(out_dir, targets) if job.reuse_media else None
-        if written is None:
-            written = media.extract_frames(
-                job.video, targets, out_dir, prefix="f",
+    # Backfill first, so reused frames never reach the decoder — and a chapter
+    # whose frames are all on disk never opens the video at all.
+    written: list[list[tuple[float, Path]] | None] = [None] * len(plans)
+    pending: list[int] = []
+    for i, (_, targets, out_dir) in enumerate(plans):
+        found = _existing_frames(out_dir, targets) if job.reuse_media else None
+        if found is not None:
+            written[i] = found
+        else:
+            pending.append(i)
+
+    report("frames", 0, total,
+           f"extracting {total} frames from {len(plans)} observations")
+
+    if pending:
+        reused = total - sum(len(plans[i][1]) for i in pending)
+
+        def on_frame(request_index, done_so_far, _total, _target, _path):
+            observation = plans[pending[request_index]][0].observation
+            report("frames", reused + done_so_far, total,
+                   f"{observation.external_id}: frame {done_so_far}")
+
+        try:
+            cut = media.extract_frames_multi(
+                job.video,
+                [media.FrameRequest(plans[i][1], plans[i][2], "f") for i in pending],
                 width=settings.frame_width, quality=settings.frame_quality,
-                should_cancel=lambda: _cancelled(check))
-        for seq, (actual_s, path) in enumerate(written):
+                on_frame=on_frame, should_cancel=lambda: _cancelled(check))
+        except media.Cancelled as exc:
+            raise Cancelled(str(exc)) from exc
+        except media.MediaError as exc:
+            raise PipelineError(str(exc)) from exc
+        for slot, frames in zip(pending, cut):
+            written[slot] = frames
+
+    done = 0
+    for (match, _, _), frames in zip(plans, written):
+        for seq, (actual_s, path) in enumerate(frames or []):
             match.frames.append((seq, actual_s - match.window_mid_s, actual_s, path))
-        done += len(written)
-        report("frames", done, total,
-               f"{match.observation.external_id}: {len(written)} frames")
+        done += len(frames or [])
+    report("frames", done, total, f"{done} frames from {len(plans)} observations")
     return done
 
 
@@ -500,7 +536,7 @@ def _existing_frames(out_dir: Path, targets: Sequence[float]
 
 
 def _build_proxy(job: IngestJob, work_dir: Path, report, check,
-                 result: IngestResult) -> Path | None:
+                 result: IngestResult, info=None) -> Path | None:
     """Build the playback proxy, from the .LRV where that is allowed and present.
 
     Returns None when no proxy is wanted. Transcoding is the most expensive
@@ -510,13 +546,25 @@ def _build_proxy(job: IngestJob, work_dir: Path, report, check,
     front for all seventeen chapters.
     """
     settings = job.settings
+
+    if settings.proxy_source == "none":
+        # Checked before anything touches the disk: the frames-only path should
+        # cost nothing at all here.
+        result.proxy_source = "none"
+        report("proxy", 1, 1, "no video (frames only)")
+        return None
+
     out_path = work_dir / f"{Path(job.video).stem}_proxy.mp4"
     lrv = media.find_lrv(job.video)
     result.lrv_found = lrv is not None
 
-    if settings.proxy_source == "none":
+    if settings.proxy_source == "lrv" and lrv is None:
+        # "lrv" means the camera's own copy, which costs seconds. Quietly
+        # transcoding from HD instead turns that into twenty minutes — the
+        # opposite of what was asked for.
         result.proxy_source = "none"
-        report("proxy", 1, 1, "no proxy (frames only)")
+        report("proxy", 1, 1, "no .LRV beside this chapter — skipped "
+                              "(use --proxy-source auto to transcode instead)")
         return None
 
     if out_path.exists():
@@ -533,16 +581,19 @@ def _build_proxy(job: IngestJob, work_dir: Path, report, check,
             media.remux_proxy(lrv, out_path)
             result.proxy_source = "lrv"
         else:
-            if settings.proxy_source == "lrv":
+            if settings.proxy_source == "auto":
                 report("proxy", 0, 1, "no .LRV found — transcoding from HD instead")
-            media.build_proxy(
-                job.video, out_path,
+            used = media.build_proxy(
+                job.video, out_path, info=info,
                 height=settings.proxy_height, bitrate_kbps=settings.proxy_bitrate_kbps,
+                encoder=settings.proxy_encoder, fps=settings.proxy_fps,
+                audio=settings.proxy_audio,
                 on_progress=lambda pos, dur: report(
                     "proxy", int(pos), int(dur) or 1,
                     f"transcoding to {settings.proxy_height}p"),
                 should_cancel=lambda: _cancelled(check))
             result.proxy_source = "hd"
+            result.proxy_encoder = used
     except media.Cancelled as exc:
         raise Cancelled(str(exc)) from exc
     except media.MediaError as exc:
@@ -750,6 +801,12 @@ def _write_local_summary(work_dir: Path, result: IngestResult) -> None:
         pass
 
 
+def _duration(seconds: float) -> str:
+    if seconds < 90:
+        return f"{seconds:.0f}s"
+    return f"{seconds / 60:.0f}m{seconds % 60:02.0f}"
+
+
 def _human_bytes(value: float) -> str:
     for unit in ("B", "KiB", "MiB", "GiB"):
         if abs(value) < 1024 or unit == "GiB":
@@ -799,14 +856,19 @@ class BatchSummary:
 
     def render(self) -> str:
         lines: list[str] = []
-        header = f"{'file':<22} {'status':<9} {'obs':>5} {'snap':>6} {'frames':>7} {'proxy':>9}"
+        header = (f"{'file':<22} {'status':<9} {'obs':>5} {'snap':>6} {'frames':>7} "
+                  f"{'video':>7} {'proxy':>9} {'time':>7}")
         lines.append(header)
         lines.append("-" * len(header))
         for r in self.results:
             snap = f"{100 * r.snap_ratio:.0f}%" if r.matched else "-"
+            # Which video path ran is on every row: a run that silently spent
+            # twenty minutes transcoding when nobody asked for video is exactly
+            # how this went unnoticed before.
             lines.append(
                 f"{r.file[:22]:<22} {r.status:<9} {r.matched:>5} {snap:>6} "
-                f"{r.frames:>7} {_human_bytes(r.proxy_bytes):>9}")
+                f"{r.frames:>7} {(r.proxy_source or '-'):>7} "
+                f"{_human_bytes(r.proxy_bytes):>9} {_duration(r.elapsed_s):>7}")
             if r.error:
                 lines.append(f"    error: {r.error}")
             if r.hint:
@@ -817,7 +879,16 @@ class BatchSummary:
         status = ", ".join(f"{n} {name}" for name, n in sorted(counts.items()))
         lines.append(f"{len(self.results)} files: {status}")
         lines.append(f"frames extracted: {self.total_frames}")
-        lines.append(f"proxy total:      {_human_bytes(self.total_proxy_bytes)}")
+        elapsed = sum(r.elapsed_s for r in self.results)
+        lines.append(f"time:             {_duration(elapsed)}"
+                     + (f"  ({_duration(elapsed / len(self.results))} a chapter)"
+                        if len(self.results) > 1 else ""))
+        if self.total_proxy_bytes:
+            transcoded = sum(1 for r in self.results if r.proxy_source == "hd")
+            lines.append(f"video:            {_human_bytes(self.total_proxy_bytes)}"
+                         + (f", {transcoded} transcoded from HD — the slow path; "
+                            "--proxy-source lrv is seconds a chapter where a "
+                            ".LRV exists" if transcoded else ""))
 
         if self.csv_rows:
             missing = self.csv_rows - self.total_matched

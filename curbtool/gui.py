@@ -198,9 +198,17 @@ class CurbToolGUI:
 
         self.vars["proxy_source"] = tk.StringVar()
         ttk.Label(box, text="Proxy from").grid(row=row, column=0, sticky="w", pady=2)
-        ttk.Combobox(box, textvariable=self.vars["proxy_source"], state="readonly",
-                     values=("none", "hd", "lrv", "auto"), width=8).grid(
-            row=row, column=1, sticky="w", pady=2)
+        proxy_box = ttk.Combobox(box, textvariable=self.vars["proxy_source"],
+                                 state="readonly",
+                                 values=("none", "lrv", "auto", "hd"), width=8)
+        proxy_box.grid(row=row, column=1, sticky="w", pady=2)
+        self._tooltip(proxy_box,
+                      "none — frames only, about a minute a chapter.\n"
+                      "lrv — the camera's own low-resolution copy, seconds.\n"
+                      "auto — lrv where there is one, otherwise transcode.\n"
+                      "hd — full transcode, 10–20 minutes a chapter.\n\n"
+                      "Video can be added later with backfill without redoing "
+                      "frames or disturbing grading.")
         row += 1
 
         row = self._add_path_row(box, row, "work_dir", "Work folder", is_dir=True)

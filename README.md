@@ -148,11 +148,11 @@ only what falls inside its own time window.
 
 Re-running a completed file is a no-op. Use `--force` to redo one.
 
-**Consider `--no-proxy` for the first full pass.** Transcoding is the most
-expensive thing this pipeline does — tens of minutes and several hundred
-megabytes per chapter — and nobody knows yet whether reviewers need video at
-all. Frames-only gets the city grading the same day. Add video later, without
-redoing anything and without disturbing grading already done:
+**Video is off by default.** Transcoding is the most expensive thing this
+pipeline does — tens of minutes and several hundred megabytes per chapter — and
+nobody knows yet whether reviewers need video at all. A frames-only pass gets
+the city grading the same day. Add video later, without redoing anything and
+without disturbing grading already done:
 
 ```bash
 python ingest.py backfill /media/gopro --campaign helsinki-2024 \
@@ -199,6 +199,7 @@ phone GNSS CSV ─── averaged position ────────────�
 | `curbtool/pipeline.py` | `ingest_file()` — one file, end to end |
 | `curbtool/verify.py` | `check` — dry-run the matching, decode nothing |
 | `curbtool/timecheck.py` | `timecheck` — prove the clocks and places agree |
+| `tools/bench.py` | Time each stage against your own footage |
 | `curbtool/batch.py` | Run a list of files, surviving individual failures |
 | `curbtool/gui.py` | Tkinter batch UI |
 | `curbtool/webui.py` | Local server behind the browser UI |
@@ -264,7 +265,10 @@ flags win over the file. `python ingest.py settings` prints the current set;
 | `frame_interval_s` | `--frame-interval` | 1.0 | Spacing within a stop window. |
 | `proxy_height` | `--proxy-height` | 720 | |
 | `proxy_bitrate_kbps` | `--proxy-bitrate` | 2500 | |
-| `proxy_source` | `--proxy-source`, `--no-proxy` | `hd` | `none` skips video entirely; `hd` transcodes; `lrv`/`auto` remux the `.LRV` companion. |
+| `proxy_source` | `--proxy-source`, `--no-proxy` | `none` | `none` skips video (default); `lrv` uses the camera's own copy or skips; `auto` falls back to transcoding; `hd` always transcodes. |
+| `proxy_encoder` | — | `auto` | Probes Intel QSV / NVENC / AMF, falls back to libx264. |
+| `proxy_fps` | — | 0 | 0 keeps the source rate; 15 roughly halves the work. |
+| `proxy_audio` | — | off | Re-encoding the audio track is not free and nobody grades by ear. |
 | `work_dir` | `--work-dir` | `work` | Frames, proxies, summaries. Gitignored. |
 | `upload` | `--no-upload` | on | Off processes locally without touching Supabase. |
 
@@ -300,8 +304,8 @@ which is what `--clock-offset` fixes, and what the summary's hint will point at.
 python run_tests.py
 ```
 
-184 tests: the pipeline, the export loader, the timezone audit, the web UI's
-HTTP surface and guards, and the desktop window. The GPMF parser runs against synthetic KLV
+209 tests: the pipeline, frame extraction, the export loader, the timezone
+audit, the web UI's HTTP surface and guards, and the desktop window. The GPMF parser runs against synthetic KLV
 built to the camera's own layout; the pipeline's end-to-end tests do real
 decoding, real transcoding and real HTTP against an in-process Supabase,
 including a dropped connection mid-upload and a restart; the GUI tests drive
@@ -348,9 +352,17 @@ silently wrong ones. Watch the unmatched count.
 **HERO5 chapters at 4 GB**, roughly 19 minutes at 1080p30, so expect ~17 files
 per campaign. Each becomes its own session row.
 
-**Proxy transcoding is the slow part**, several minutes per chapter. Where a
-`.LRV` companion is good enough, `--proxy-source lrv` stream-copies it in
-seconds instead.
+**Video is the slow part** — 10–20 minutes per 4K chapter against about one
+minute for the frames. It is off by default for that reason. Where a `.LRV`
+companion exists, `--proxy-source lrv` stream-copies it in seconds instead;
+`--proxy-source hd` is the full transcode, and it will use your GPU if PyAV can
+open one.
+
+**Measure before optimising anything.** `python tools/bench.py <chapter>` times
+each stage against your own footage and prints where the time goes. Add
+`--proxy` to see what turning video on would cost. Every speed figure in this
+repo was measured on a small synthetic clip; decode cost in particular does not
+transfer to real 4K.
 
 **Interrupting is safe.** Ctrl-C (or Cancel in the GUI) stops after the current
 step. The session row is only marked `complete` once everything has landed, so
