@@ -410,6 +410,10 @@ class Telemetry:
     payload_count: int
     dropped_samples: int
     device: str | None = None
+    # GPS9 (HERO11 and later) carries UTC, DOP and fix quality per sample;
+    # GPS5 carries one GPSU stamp for the whole payload. Both take their time
+    # from the satellites, so neither is affected by the camera's timezone.
+    kind: str = ""
 
     @property
     def duration_s(self) -> float:
@@ -436,6 +440,17 @@ def parse_telemetry(path: str | Path, min_fix: int = MIN_FIX) -> Telemetry:
     samples = parse_payloads(payloads, min_fix=min_fix)
     total = len(parse_payloads(payloads, min_fix=0)) if min_fix > 0 else len(samples)
     device = None
+    kind = ""
+    for _, _, data in payloads[:4]:
+        for items in _stream_items(data):
+            for item in items:
+                if item.key in ("GPS9", "GPS5"):
+                    kind = item.key
+                    break
+            if kind:
+                break
+        if kind:
+            break
     if payloads:
         for item in iter_klv(payloads[0][2]):
             if item.key == "DEVC" and item.is_nested:
@@ -450,7 +465,8 @@ def parse_telemetry(path: str | Path, min_fix: int = MIN_FIX) -> Telemetry:
             "The camera probably never got a satellite lock for this chapter."
         )
     return Telemetry(samples=samples, payload_count=len(payloads),
-                     dropped_samples=max(0, total - len(samples)), device=device)
+                     dropped_samples=max(0, total - len(samples)), device=device,
+                     kind=kind)
 
 
 # --------------------------------------------------------------------------

@@ -39,6 +39,47 @@ here, and is optional.
 `.env` needs the **`service_role`** key. It bypasses RLS. It is gitignored;
 keep it that way, and never give it to Lovable — Lovable gets the anon key.
 
+## First: do the clocks agree?
+
+Run this whenever the timestamps come from a new app or a new camera. It reads
+telemetry and the CSV, decodes nothing and writes nothing.
+
+```bash
+python ingest.py timecheck /media/gopro --observations tags.csv
+```
+
+It answers the question from both sides.
+
+**The camera cannot have the wrong timezone.** GoPro telemetry takes its time
+from the GPS satellites, so GPSU (GPS5) and the per-sample stamps in GPS9 are
+UTC no matter what the camera's clock or timezone is set to. The trap is the
+MP4 container's `creation_time`, which GoPro writes in the camera's *local*
+time while labelling it with a "Z". `timecheck` shows both and reports the gap
+— that gap is the camera's timezone setting, it is expected to be non-zero, and
+the pipeline never reads that field.
+
+**The export is checked against itself.** Where it states the same instant more
+than once — local, UTC, epoch — the offsets between those columns prove the
+zone from the file, with nothing assumed. The column actually used is scored
+and named, and a column that looks like local wall-clock time is ranked last.
+
+Then it counts how many observations land inside the footage as things stand,
+and whether any whole-hour shift would do materially better. If one would, that
+is local time being read as UTC. It also compares where the export says it was
+against where the camera was: kilometres apart means the wrong CSV is paired
+with the wrong footage.
+
+If the export only gives local time, name its zone rather than computing an
+offset by hand — a named zone gets summer time right, a fixed offset cannot:
+
+```bash
+python ingest.py check /media/gopro --observations tags.csv \
+    --timezone Europe/Tallinn
+```
+
+On Windows this needs the `tzdata` package (`pip install tzdata`); the tool
+says so if it is missing.
+
 ## Check before you ingest
 
 `check` matches the whole campaign against every chapter without decoding a
@@ -150,6 +191,7 @@ phone GNSS CSV ─── averaged position ────────────�
 | `curbtool/supabase_io.py` | PostgREST rows, storage, resumable uploads |
 | `curbtool/pipeline.py` | `ingest_file()` — one file, end to end |
 | `curbtool/verify.py` | `check` — dry-run the matching, decode nothing |
+| `curbtool/timecheck.py` | `timecheck` — prove the clocks and places agree |
 | `curbtool/batch.py` | Run a list of files, surviving individual failures |
 | `curbtool/gui.py` | Tkinter batch UI |
 | `curbtool/webui.py` | Local server behind the browser UI |
@@ -203,6 +245,7 @@ flags win over the file. `python ingest.py settings` prints the current set;
 | `campaign` | `--campaign` | — | Required. Part of the derived session ID. |
 | `observations_csv` | `--observations` | — | Campaign-wide, passed to every file. |
 | `gnss_csv` | `--gnss` | — | Optional phone GNSS log. |
+| `timezone` | `--timezone` | — | IANA zone for timestamps with no zone of their own. |
 | `clock_offset_s` | `--clock-offset` | 0 | Added to every observation timestamp. |
 | `stop_speed_mps` | `--stop-speed` | 0.7 | At or below this, counted as stopped. |
 | `stop_min_duration_s` | `--stop-min-duration` | 3.0 | Shortest run that counts as a stop. |
@@ -223,6 +266,17 @@ appear in the settings panel) rather than on the command line.
 
 ### CSV columns
 
+An export that carries a per-observation id is used as-is. One that carries
+only a **session id** shared across rows is not: an identifier that repeats is
+not an identifier, and observation IDs derive from it, so the tool falls back to
+row numbers and says so. Getting this wrong merges hundreds of observations onto
+one database row.
+
+Where several time columns exist they are scored, the winner is named, and a
+column that looks like local wall-clock time is ranked last. `observation_type`
+becomes the category and `label` the note, so filtering works on the stable key
+rather than a sentence.
+
 Both loaders detect columns from aliases, so most exports work untouched:
 timestamps (`utc`, `timestamp`, `time`, `aikaleima`…), coordinates (`lat`,
 `latitude`, `y`…), category, note and id. Semicolon delimiters and decimal
@@ -239,8 +293,8 @@ which is what `--clock-offset` fixes, and what the summary's hint will point at.
 python run_tests.py
 ```
 
-150 tests: the pipeline, the web UI's HTTP surface and guards, and the
-desktop window. The GPMF parser runs against synthetic KLV
+184 tests: the pipeline, the export loader, the timezone audit, the web UI's
+HTTP surface and guards, and the desktop window. The GPMF parser runs against synthetic KLV
 built to the camera's own layout; the pipeline's end-to-end tests do real
 decoding, real transcoding and real HTTP against an in-process Supabase,
 including a dropped connection mid-upload and a restart; the GUI tests drive

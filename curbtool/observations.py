@@ -25,10 +25,17 @@ TIME_ALIASES = ("utc", "timestamp", "time", "datetime", "date_time", "recorded_a
                 "created_at", "tagged_at", "observed_at", "aika", "aikaleima")
 LAT_ALIASES = ("lat", "latitude", "y", "wgs84_lat", "leveysaste")
 LON_ALIASES = ("lon", "lng", "long", "longitude", "x", "wgs84_lon", "pituusaste")
-CATEGORY_ALIASES = ("category", "type", "tag", "class", "label", "kind", "luokka", "tyyppi")
+# observation_type before label: the machine key groups and filters reliably,
+# where the human sentence is display text.
+CATEGORY_ALIASES = ("observationtype", "obstype", "category", "type", "tag", "class",
+                    "kind", "label", "luokka", "tyyppi")
 NOTE_ALIASES = ("note", "notes", "description", "comment", "comments", "remark",
-                "huomio", "kuvaus")
-ID_ALIASES = ("id", "uuid", "external_id", "observation_id", "obs_id", "point_id", "tunnus")
+                "huomio", "kuvaus", "label")
+# Matched exactly, never by containment: "session_id" and "device_id" are shared
+# by hundreds of rows, and treating one as an observation's identity collapses
+# the whole campaign onto a handful of database rows.
+ID_ALIASES = ("id", "uuid", "externalid", "observationid", "obsid", "pointid",
+              "featureid", "tunnus")
 ACCURACY_ALIASES = ("accuracy", "accuracy_m", "hacc", "horizontal_accuracy", "acc",
                     "precision", "tarkkuus")
 
@@ -75,14 +82,17 @@ def _normalise_fraction(match: re.Match) -> str:
     return f"{match.group(1)}.{match.group(2)[:6].ljust(6, '0')}"
 
 
-def parse_timestamp(value: str | None) -> datetime | None:
+def parse_timestamp(value: str | None, zone=None) -> datetime | None:
     """Parse a timestamp into an aware UTC datetime.
 
     Accepts ISO 8601 (with ``T`` or a space, with ``Z``, an offset, or neither)
-    and epoch seconds/milliseconds. A timestamp with no zone is taken as UTC —
-    if the tagging app actually exported local time the whole campaign will be
-    off by a constant, which is what ``--clock-offset`` exists to correct, and
-    what :func:`suggest_clock_offset` exists to spot.
+    and epoch seconds/milliseconds.
+
+    A timestamp with no zone is read in *zone* when one is given, and as UTC
+    otherwise — so if the tagging app exported local time and no zone is set,
+    the whole campaign is off by a constant. That is what ``--timezone`` and
+    ``--clock-offset`` exist to correct, and what :func:`suggest_clock_offset`
+    exists to spot.
     """
     if value is None:
         return None
@@ -116,7 +126,10 @@ def parse_timestamp(value: str | None) -> datetime | None:
                 continue
         else:
             return None
-    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
+    if parsed.tzinfo is not None:
+        return parsed.astimezone(UTC)
+    return (parsed.replace(tzinfo=zone).astimezone(UTC) if zone is not None
+            else parsed.replace(tzinfo=UTC))
 
 
 def parse_number(value: str | None) -> float | None:
@@ -147,8 +160,13 @@ def _normalise(name: str) -> str:
 
 
 def find_column(headers: Sequence[str], aliases: Sequence[str],
-                override: str | None = None) -> str | None:
-    """Pick the header matching one of *aliases*, preferring an exact match."""
+                override: str | None = None, exact_only: bool = False) -> str | None:
+    """Pick the header matching one of *aliases*, preferring an exact match.
+
+    *exact_only* disables the containment fallback. Use it wherever a wrong
+    guess is worse than no guess — identifiers especially, where "session_id"
+    would otherwise satisfy a search for "id".
+    """
     if override:
         for header in headers:
             if _normalise(header) == _normalise(override):
@@ -160,12 +178,101 @@ def find_column(headers: Sequence[str], aliases: Sequence[str],
     for alias in aliases:
         if alias in lookup:
             return lookup[alias]
+    if exact_only:
+        return None
     # Fall back to a containment match ("gps_latitude" for "latitude").
     for alias in aliases:
         for norm, header in lookup.items():
             if alias in norm:
                 return header
     return None
+
+
+# --------------------------------------------------------------------------
+# Choosing the time column
+# --------------------------------------------------------------------------
+
+# Names that mark a column as local wall-clock time rather than UTC. Matching
+# one is disqualifying, not merely unhelpful: reading local time as UTC shifts
+# every frame in the campaign by the whole offset.
+LOCAL_MARKERS = ("local", "eest", "eet", "cest", "cet", "eddt", "paikallinen",
+                 "kohalik", "wallclock")
+
+
+def score_time_column(header: str, samples: Sequence[str]) -> tuple[int, str]:
+    """Rank a candidate time column. Higher is better; the reason is for the log.
+
+    An export often carries the same instant three ways — local, UTC and epoch.
+    Which one is picked decides whether every frame lands on the right second,
+    so the choice is scored explicitly rather than left to whichever column
+    happens to come first.
+    """
+    name = _normalise(header)
+    values = [v for v in samples if v and str(v).strip()][:20]
+    if not values:
+        return -1, "no values"
+    parsed = [parse_timestamp(v) for v in values]
+    if not any(parsed):
+        return -1, "nothing parses as a time"
+
+    aware = sum(1 for v in values if _looks_aware(str(v)))
+    epoch = sum(1 for v in values if re.fullmatch(r"-?\d{9,13}(\.\d+)?", str(v).strip()))
+
+    if epoch == len(values):
+        return 90, "epoch time, unambiguous"
+    if aware == len(values) and "utc" in name:
+        return 100, "named UTC and carries a zone"
+    if aware == len(values):
+        return 80, "carries an explicit zone"
+    if "utc" in name or name.endswith("z"):
+        return 60, "named UTC but no zone in the values"
+    if any(marker in name for marker in LOCAL_MARKERS):
+        return 10, "looks like local wall-clock time"
+    return 40, "a time column with no zone"
+
+
+def _looks_aware(value: str) -> bool:
+    text = value.strip()
+    return bool(text.endswith(("Z", "z"))
+                or re.search(r"[+-]\d{2}:?\d{2}$", text))
+
+
+def choose_time_column(headers: Sequence[str], rows: Sequence[dict],
+                       override: str | None = None) -> tuple[str, list[tuple[str, int, str]]]:
+    """The best time column, plus every candidate and why it scored as it did."""
+    if override:
+        column = find_column(headers, (), override)
+        return column, [(column, 100, "chosen explicitly")]
+
+    candidates: list[tuple[str, int, str]] = []
+    for header in headers:
+        name = _normalise(header)
+        if not any(alias in name for alias in TIME_ALIASES):
+            continue
+        score, reason = score_time_column(header, [r.get(header, "") for r in rows])
+        if score >= 0:
+            candidates.append((header, score, reason))
+
+    if not candidates:
+        raise ObservationError(
+            "no timestamp column found. Headers: " + ", ".join(headers)
+            + ". Pass --time-column to name it explicitly.")
+    candidates.sort(key=lambda c: (-c[1], headers.index(c[0])))
+    return candidates[0][0], candidates
+
+
+class ObservationSet(list):
+    """The loaded observations, carrying what the loader had to decide.
+
+    A plain list everywhere it is used; the extra fields exist so a caller that
+    cares — the pre-flight check, the UI — can show how the columns were read
+    and what was thrown away.
+    """
+
+    columns: dict[str, str | None]
+    time_candidates: list[tuple[str, int, str]]
+    warnings: list[str]
+    unparsed_rows: int
 
 
 def _open_rows(path: Path) -> tuple[list[str], list[dict]]:
@@ -199,30 +306,36 @@ def _open_rows(path: Path) -> tuple[list[str], list[dict]]:
 def load_observations(path: str | Path, time_column: str | None = None,
                       lat_column: str | None = None, lon_column: str | None = None,
                       category_column: str | None = None, note_column: str | None = None,
-                      id_column: str | None = None) -> list[Observation]:
+                      id_column: str | None = None,
+                      timezone_name: str | None = None) -> ObservationSet:
     """Load the campaign-wide observation CSV.
 
     Every run is given the same campaign-wide CSV; each video matches only the
     rows that fall inside its own time window.
+
+    *timezone_name* is an IANA zone (``Europe/Tallinn``) used to interpret
+    timestamps that carry no zone of their own. Without it, a naive timestamp
+    is read as UTC.
     """
     path = Path(path)
     headers, rows = _open_rows(path)
 
-    time_col = find_column(headers, TIME_ALIASES, time_column)
-    if time_col is None:
-        raise ObservationError(
-            f"{path.name}: no timestamp column found. Headers: {', '.join(headers)}. "
-            "Pass --time-column to name it explicitly.")
+    time_col, candidates = choose_time_column(headers, rows, time_column)
     lat_col = find_column(headers, LAT_ALIASES, lat_column)
     lon_col = find_column(headers, LON_ALIASES, lon_column)
     cat_col = find_column(headers, CATEGORY_ALIASES, category_column)
     note_col = find_column(headers, NOTE_ALIASES, note_column)
-    id_col = find_column(headers, ID_ALIASES, id_column)
+    if note_col is not None and note_col == cat_col:
+        note_col = None      # one column cannot be both
+    id_col = find_column(headers, ID_ALIASES, id_column, exact_only=True)
 
-    observations: list[Observation] = []
+    warnings: list[str] = []
+    zone = _load_zone(timezone_name, warnings) if timezone_name else None
+
+    observations = ObservationSet()
     unparsed = 0
-    for number, row in enumerate(rows, start=2):  # row 1 is the header
-        utc = parse_timestamp(row.get(time_col))
+    for number, row in enumerate(rows, start=2):      # row 1 is the header
+        utc = parse_timestamp(row.get(time_col), zone)
         if utc is None:
             unparsed += 1
             continue
@@ -242,15 +355,54 @@ def load_observations(path: str | Path, time_column: str | None = None,
         raise ObservationError(
             f"{path.name}: found {len(rows)} rows but none had a readable timestamp "
             f"in column {time_col!r}.")
+
+    # An identifier that repeats is not an identifier. Observation IDs are
+    # derived from it, so duplicates would quietly merge distinct observations
+    # into one database row and lose the rest.
+    if id_col:
+        seen = {o.external_id for o in observations}
+        if len(seen) != len(observations):
+            warnings.append(
+                f"column {id_col!r} is not unique ({len(observations)} rows, "
+                f"{len(seen)} distinct values) — falling back to row numbers so "
+                "no observation is lost.")
+            id_col = None
+            for observation in observations:
+                observation.external_id = f"row{observation.row_number}"
+
+    chosen_score = next((c for c in candidates if c[0] == time_col), None)
+    if chosen_score and chosen_score[1] <= 40:
+        warnings.append(
+            f"time column {time_col!r} {chosen_score[2]}; if it is local time, set "
+            "a timezone or a clock offset before ingesting.")
     if unparsed:
-        # Not fatal, but it must not pass unnoticed — these rows can never match.
-        observations[0].raw.setdefault("_unparsed_rows", str(unparsed))
+        warnings.append(f"{unparsed} row(s) had no readable timestamp and were skipped.")
+
+    observations.columns = {"time": time_col, "lat": lat_col, "lon": lon_col,
+                            "category": cat_col, "note": note_col, "id": id_col}
+    observations.time_candidates = candidates
+    observations.warnings = warnings
+    observations.unparsed_rows = unparsed
     return observations
+
+
+def _load_zone(name: str, warnings: list[str]):
+    """Resolve an IANA timezone, explaining the Windows case if it is missing."""
+    try:
+        from zoneinfo import ZoneInfo
+        return ZoneInfo(name)
+    except Exception as exc:
+        warnings.append(
+            f"timezone {name!r} could not be loaded ({exc}); timestamps without a "
+            "zone are being read as UTC. On Windows this usually means the tzdata "
+            "package is missing — pip install tzdata.")
+        return None
 
 
 def load_phone_track(path: str | Path, time_column: str | None = None,
                      lat_column: str | None = None, lon_column: str | None = None,
-                     accuracy_column: str | None = None) -> list[PhoneFix]:
+                     accuracy_column: str | None = None,
+                     timezone_name: str | None = None) -> list[PhoneFix]:
     """Load the phone GNSS log, sorted by time.
 
     The phone is multi-constellation with sensor fusion; a HERO5 is a weak
@@ -260,7 +412,10 @@ def load_phone_track(path: str | Path, time_column: str | None = None,
     path = Path(path)
     headers, rows = _open_rows(path)
 
-    time_col = find_column(headers, TIME_ALIASES, time_column)
+    try:
+        time_col, _ = choose_time_column(headers, rows, time_column)
+    except ObservationError:
+        time_col = None
     lat_col = find_column(headers, LAT_ALIASES, lat_column)
     lon_col = find_column(headers, LON_ALIASES, lon_column)
     acc_col = find_column(headers, ACCURACY_ALIASES, accuracy_column)
@@ -272,9 +427,10 @@ def load_phone_track(path: str | Path, time_column: str | None = None,
             f"{path.name}: phone GNSS log is missing {', '.join(missing)}. "
             f"Headers: {', '.join(headers)}")
 
+    zone = _load_zone(timezone_name, []) if timezone_name else None
     fixes: list[PhoneFix] = []
     for row in rows:
-        utc = parse_timestamp(row.get(time_col))
+        utc = parse_timestamp(row.get(time_col), zone)
         lat = parse_number(row.get(lat_col))
         lon = parse_number(row.get(lon_col))
         if utc is None or lat is None or lon is None:

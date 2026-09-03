@@ -2,6 +2,7 @@
 """curbtool CLI — a thin wrapper over curbtool.pipeline.
 
     python ingest.py web                                          # buttons for all of it
+    python ingest.py timecheck FOLDER --observations tags.csv     # do the clocks agree?
     python ingest.py check  FOLDER --observations tags.csv        # always start here
     python ingest.py ingest FOLDER --campaign helsinki-2024 --observations tags.csv
     python ingest.py track  GX010042.MP4 --geojson route.json
@@ -101,6 +102,7 @@ def settings_from_args(args: argparse.Namespace) -> Settings:
         observations_csv=getattr(args, "observations", None),
         gnss_csv=getattr(args, "gnss", None),
         campaign=getattr(args, "campaign", None),
+        timezone=getattr(args, "timezone", None),
         clock_offset_s=getattr(args, "clock_offset", None),
         stop_speed_mps=getattr(args, "stop_speed", None),
         stop_min_duration_s=getattr(args, "stop_min_duration", None),
@@ -120,6 +122,9 @@ def add_common_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--observations", metavar="CSV",
                         help="campaign-wide observation CSV from the tagging app")
     parser.add_argument("--gnss", metavar="CSV", help="optional phone GNSS log")
+    parser.add_argument("--timezone", metavar="ZONE",
+                        help="IANA zone (e.g. Europe/Tallinn) for observation "
+                             "timestamps that carry no zone of their own")
     parser.add_argument("--clock-offset", type=float, metavar="SECONDS",
                         help="seconds to add to every observation timestamp")
     parser.add_argument("--stop-speed", type=float, metavar="M/S",
@@ -204,6 +209,32 @@ def cmd_backfill(args: argparse.Namespace) -> int:
     args.reuse_media = True
     log("backfill: reusing frames and proxies already in the work folder")
     return cmd_ingest(args)
+
+
+def cmd_timecheck(args: argparse.Namespace) -> int:
+    """Prove the export and the footage refer to the same hours.
+
+    Run this before anything else when the timestamps come from a new app or a
+    new camera. It reads telemetry and a CSV; it decodes nothing and writes
+    nothing.
+    """
+    from curbtool.timecheck import audit
+
+    settings = settings_from_args(args)
+    videos: list[Path] = []
+    for target in args.target:
+        videos.extend(find_videos(target))
+
+    csv_path = settings.observations_csv or None
+    if not videos and not csv_path:
+        log("give me some footage, an --observations CSV, or both")
+        return 2
+
+    result = audit(videos, csv_path, timezone_name=settings.timezone or None,
+                   on_progress=lambda m: log(f"    {m}"))
+    print()
+    print(result.render())
+    return 0 if result.ok else 1
 
 
 def cmd_check(args: argparse.Namespace) -> int:
@@ -364,6 +395,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_check.add_argument("target", nargs="+", help="video file(s) or a folder of them")
     add_common_arguments(p_check)
     p_check.set_defaults(func=cmd_check)
+
+    p_timecheck = sub.add_parser(
+        "timecheck",
+        help="prove the CSV and the footage refer to the same hours (timezones)")
+    p_timecheck.add_argument("target", nargs="*", default=[],
+                             help="video file(s) or a folder of them")
+    add_common_arguments(p_timecheck)
+    p_timecheck.set_defaults(func=cmd_timecheck)
 
     p_track = sub.add_parser(
         "track", help="dump one file's telemetry, stops and route (verify first)")

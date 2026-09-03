@@ -30,6 +30,9 @@ class Settings:
     last_folder: str = ""
 
     # Matching
+    # An IANA zone (Europe/Tallinn) used only for timestamps that carry no zone
+    # of their own. Handles summer time correctly, which a fixed offset cannot.
+    timezone: str = ""
     clock_offset_s: float = 0.0
     stop_speed_mps: float = 0.7
     stop_min_duration_s: float = 3.0
@@ -66,6 +69,7 @@ class Settings:
     def describe(self) -> str:
         """The settings that change what lands in the database."""
         return (f"campaign={self.campaign or '(unset)'} "
+                f"tz={self.timezone or 'UTC (naive stamps)'} "
                 f"clock_offset={self.clock_offset_s:+g}s "
                 f"stop<={self.stop_speed_mps:g}m/s>={self.stop_min_duration_s:g}s "
                 f"frames={self.frame_width}px x{self.max_frames} "

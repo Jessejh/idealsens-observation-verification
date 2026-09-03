@@ -20,10 +20,11 @@ UTC = timezone.utc
 
 
 def drive_plan(start_utc: datetime, stops_at: list[tuple[float, float]],
-               duration_s: float, hz: int = 1):
+               duration_s: float, hz: int = 1,
+               origin: tuple[float, float] = (60.17000, 24.94000)):
     """Positions and speeds for a drive that halts at each (start, end) in stops_at."""
     rows = []
-    lat, lon = 60.17000, 24.94000
+    lat, lon = origin
     step = 1.0 / hz
     t = 0.0
     while t < duration_s:
@@ -50,13 +51,23 @@ def telemetry_payloads(rows, hz: int = 1):
 
 
 def write_clip(path: Path, duration_s: float, fps: int = 30,
-               width: int = 960, height: int = 540) -> Path:
-    """A small real MP4 — kept modest so the suite stays quick."""
+               width: int = 960, height: int = 540,
+               creation_time: str | None = None) -> Path:
+    """A small real MP4 — kept modest so the suite stays quick.
+
+    *creation_time* fills the container stamp, letting a test reproduce a
+    camera whose timezone was set to something other than UTC.
+    """
     import av
     import numpy as np
 
     path.parent.mkdir(parents=True, exist_ok=True)
     with av.open(str(path), "w") as container:
+        if creation_time:
+            # GoPro writes the camera's *local* clock here, with a "Z" that is
+            # not true. Reproduced so the timezone audit has the real trap to
+            # find rather than a tidy fiction.
+            container.metadata["creation_time"] = creation_time
         stream = container.add_stream("h264", rate=fps)
         stream.width, stream.height, stream.pix_fmt = width, height, "yuv420p"
         stream.bit_rate = 2_000_000

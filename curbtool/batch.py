@@ -37,10 +37,12 @@ def load_inputs(settings: Settings) -> tuple[list[Observation], list[PhoneFix]]:
     """Read the campaign CSVs once for the whole batch."""
     observations: list[Observation] = []
     if settings.observations_csv:
-        observations = load_observations(settings.observations_csv)
+        observations = load_observations(settings.observations_csv,
+                                         timezone_name=settings.timezone or None)
     phone_fixes: list[PhoneFix] = []
     if settings.gnss_csv:
-        phone_fixes = load_phone_track(settings.gnss_csv)
+        phone_fixes = load_phone_track(settings.gnss_csv,
+                                       timezone_name=settings.timezone or None)
     return observations, phone_fixes
 
 
