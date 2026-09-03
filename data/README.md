@@ -22,6 +22,25 @@ runtime from the path in Settings. Nothing from it is compiled into the tool.
 | `session_id` | Shared by every row in one phone session. **Never an observation identifier** — it repeats, so the loader rejects it and uses row numbers. |
 | `device_id` | The phone. |
 
+### Found automatically
+
+`campaign.json` beside the CSV names it, so nothing has to be typed:
+
+```json
+{
+  "campaign": "parnu-2026",
+  "observations": "parnu-observations-2026-08-26_27.csv",
+  "gnss": "parnu-observations-2026-08-26_27.csv"
+}
+```
+
+`gnss` points at the same file on purpose — it carries a timestamp,
+coordinates and an accuracy per row, which is a phone position log, and at a
+median 3.3 m it beats the camera's own fix.
+
+To use a different campaign, drop its CSV here and edit those three lines. A
+folder holding exactly one CSV works with no manifest at all.
+
 ### It verifies its own timezone
 
 The same instant appears three ways, and they agree exactly:

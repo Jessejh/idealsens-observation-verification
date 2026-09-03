@@ -32,6 +32,27 @@ anything you add.
 Tkinter is used for the GUI. It ships with python.org builds and with most
 Windows Pythons; on Debian/Ubuntu it is `apt install python3-tk`.
 
+## The campaign data ships with the tool
+
+`data/` holds the campaign's observation CSV and a small `campaign.json` naming
+it:
+
+```json
+{
+  "campaign": "parnu-2026",
+  "observations": "parnu-observations-2026-08-26_27.csv",
+  "gnss": "parnu-observations-2026-08-26_27.csv"
+}
+```
+
+With no saved settings, the tool reads that and fills in the campaign name, the
+observation CSV and the phone position log — so a fresh unpack runs without
+anything being typed. Drop a different campaign in and edit that one file; a
+folder holding exactly one CSV needs no manifest at all.
+
+Anything you set yourself always wins, and clearing a field in the UI keeps it
+cleared: auto-detection fills blanks, it does not override decisions.
+
 ## Set up the database
 
 Run [`schema.sql`](schema.sql) then [`spatial.sql`](spatial.sql) in the
@@ -48,7 +69,7 @@ Run this whenever the timestamps come from a new app or a new camera. It reads
 telemetry and the CSV, decodes nothing and writes nothing.
 
 ```bash
-python ingest.py timecheck /media/gopro --observations tags.csv
+python ingest.py timecheck /media/gopro
 ```
 
 It answers the question from both sides.
@@ -250,9 +271,9 @@ flags win over the file. `python ingest.py settings` prints the current set;
 
 | Setting | Flag | Default | Notes |
 |---|---|---|---|
-| `campaign` | `--campaign` | — | Required. Part of the derived session ID. |
-| `observations_csv` | `--observations` | — | Campaign-wide, passed to every file. |
-| `gnss_csv` | `--gnss` | — | Optional phone GNSS log. |
+| `campaign` | `--campaign` | from `data/` | Part of the derived session ID — set once, never change it. |
+| `observations_csv` | `--observations` | from `data/` | Campaign-wide, passed to every file. |
+| `gnss_csv` | `--gnss` | from `data/` | Optional phone GNSS log. |
 | `timezone` | `--timezone` | — | IANA zone for timestamps with no zone of their own. |
 | `clock_offset_s` | `--clock-offset` | 0 | Added to every observation timestamp. |
 | `stop_speed_mps` | `--stop-speed` | 0.7 | At or below this, counted as stopped. |
@@ -270,7 +291,7 @@ flags win over the file. `python ingest.py settings` prints the current set;
 | `proxy_fps` | — | 0 | 0 keeps the source rate; 15 roughly halves the work. |
 | `proxy_audio` | — | off | Re-encoding the audio track is not free and nobody grades by ear. |
 | `work_dir` | `--work-dir` | `work` | Frames, proxies, summaries. Gitignored. |
-| `upload` | `--no-upload` | on | Off processes locally without touching Supabase. |
+| `upload` | `--no-upload` | off | On needs `.env`; off processes locally. |
 
 Rows with no flag are edited in `~/.curbtool.json` (or the GUI, where they
 appear in the settings panel) rather than on the command line.

@@ -34,7 +34,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from .batch import find_videos
-from .config import Settings, SupabaseConfig
+from .config import Settings, SupabaseConfig, describe_inputs
 from .media import MediaError, find_lrv, probe
 from .observations import ObservationError
 from .pipeline import (STAGES, BatchSummary, Cancelled, IngestJob, IngestResult,
@@ -110,7 +110,9 @@ class CurbToolGUI:
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self._poll_id: str | None = self.root.after(POLL_MS, self._drain)
-        self.log(self.supabase.describe())
+        self.log(describe_inputs(self.settings))
+        self.log(self.supabase.describe()
+                 + ("" if self.settings.upload else " — uploads off"))
 
     # ------------------------------------------------------------------
     # Layout

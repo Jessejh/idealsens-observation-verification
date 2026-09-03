@@ -18,6 +18,64 @@ from pathlib import Path
 
 CONFIG_PATH = Path.home() / ".curbtool.json"
 
+# The folder the tool ships in. curbtool/config.py -> the directory holding
+# curbtool/, ingest.py and data/. Same idea as WEB_ROOT in webui.py, one level
+# further out because data/ sits beside the package rather than inside it.
+BUNDLE_ROOT = Path(__file__).resolve().parent.parent
+DATA_DIR = BUNDLE_ROOT / "data"
+
+
+def bundled_defaults(data_dir: Path | None = None) -> dict:
+    """Settings discovered from the data/ folder shipped beside the tool.
+
+    So that a fresh unpack can go straight to Check without anyone typing a
+    path. Only keys whose files actually exist are returned, so a missing or
+    emptied data/ degrades to plain defaults rather than to a broken path.
+
+    ``data/campaign.json`` names the files explicitly and is the thing to edit
+    when a different campaign is dropped in. Without it, a folder holding
+    exactly one CSV is unambiguous enough to use; two or more is not, and
+    guessing there would be worse than asking.
+    """
+    data_dir = DATA_DIR if data_dir is None else Path(data_dir)
+    if not data_dir.is_dir():
+        return {}
+
+    manifest: dict = {}
+    manifest_path = data_dir / "campaign.json"
+    if manifest_path.is_file():
+        try:
+            loaded = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest = loaded if isinstance(loaded, dict) else {}
+        except (OSError, ValueError):
+            manifest = {}
+
+    def resolve(name) -> str:
+        if not isinstance(name, str) or not name:
+            return ""
+        candidate = data_dir / name
+        return str(candidate) if candidate.is_file() else ""
+
+    observations = resolve(manifest.get("observations"))
+    gnss = resolve(manifest.get("gnss"))
+    campaign = manifest.get("campaign") if isinstance(manifest.get("campaign"), str) else ""
+
+    if not observations:
+        csvs = sorted(p for p in data_dir.glob("*.csv") if p.is_file())
+        if len(csvs) == 1:
+            observations = str(csvs[0])
+            gnss = gnss or observations
+            campaign = campaign or csvs[0].stem
+
+    found = {}
+    if observations:
+        found["observations_csv"] = observations
+    if gnss:
+        found["gnss_csv"] = gnss
+    if campaign:
+        found["campaign"] = campaign
+    return found
+
 
 @dataclass
 class Settings:
@@ -70,7 +128,11 @@ class Settings:
 
     # Output
     work_dir: str = "work"
-    upload: bool = True
+    # Off by default. .env does not ship — only .env.example — so uploading on
+    # a fresh unpack fails for want of credentials, which is a setup step in
+    # the way of the first thing worth doing: cutting frames and looking at
+    # them. Tick it once Supabase is configured.
+    upload: bool = False
 
     def merged(self, **overrides) -> "Settings":
         """A copy with non-None overrides applied — CLI flags beating the file."""
@@ -106,16 +168,49 @@ class Settings:
         starting; unknown keys are dropped and missing ones take their default.
         """
         path = Path(path) if path is not None else CONFIG_PATH
+        bundled = bundled_defaults()
         if not path.exists():
-            return cls()
+            return cls(**bundled)
         try:
             data = json.loads(path.read_text())
         except (OSError, ValueError):
-            return cls()
+            return cls(**bundled)
         if not isinstance(data, dict):
-            return cls()
+            return cls(**bundled)
+
         known = {f.name for f in fields(cls)}
-        return cls(**{k: v for k, v in data.items() if k in known})
+        values = {k: v for k, v in data.items() if k in known}
+        # A key that is present wins, including when it is empty: clearing a
+        # field means "none", not "go and find one for me". Only keys the saved
+        # file never mentions — a file written by an older build, or one that
+        # predates data/ — pick up what the bundle ships with.
+        for key, value in bundled.items():
+            values.setdefault(key, value)
+        return cls(**values)
+
+
+def describe_inputs(settings: "Settings") -> str:
+    """One line naming the observation CSV in use, and where it came from.
+
+    Auto-detection that silently picks the wrong file is worse than none, so
+    whatever was found gets said out loud at startup.
+    """
+    if not settings.observations_csv:
+        if not DATA_DIR.is_dir():
+            return "no observation CSV set — choose one in Settings"
+        return ("no observation CSV set — put one in the data folder, or choose "
+                "it in Settings")
+    path = Path(settings.observations_csv)
+    where = "shipped in data/" if path.parent == DATA_DIR else str(path.parent)
+    if not path.is_file():
+        return f"observation CSV not found: {path}"
+    try:
+        with path.open(encoding="utf-8-sig", errors="replace") as handle:
+            rows = max(0, sum(1 for _ in handle) - 1)
+        count = f"{rows} rows, "
+    except OSError:
+        count = ""
+    return f"observations: {path.name} ({count}{where})"
 
 
 @dataclass

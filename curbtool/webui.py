@@ -36,7 +36,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from . import errors
 from .batch import find_videos, load_inputs, make_client
-from .config import Settings, SupabaseConfig
+from .config import Settings, SupabaseConfig, describe_inputs
 from .media import MediaError, find_lrv, probe
 from .observations import ObservationError
 from .pipeline import (STAGES, BatchSummary, Cancelled, IngestJob, IngestResult,
@@ -672,7 +672,9 @@ def main(port: int = 0, open_browser: bool = True) -> int:
         return 1
 
     state.log("curbtool ready")
-    state.log(state.supabase.describe())
+    state.log(describe_inputs(state.settings))
+    state.log(state.supabase.describe()
+              + ("" if state.settings.upload else " — uploads off"))
     print(f"curbtool web UI  →  {server.url}")
     print("This server is local to this machine. Close the window or press "
           "Ctrl-C to stop it.")

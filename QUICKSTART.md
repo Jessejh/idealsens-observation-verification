@@ -8,6 +8,9 @@ Nothing here uploads anything or writes to Supabase.
 
 ---
 
+**Nothing to configure.** The 637 Pärnu observations ship in `data\`, and the
+tool finds them on its own. You supply the footage; that is all.
+
 ## 1. Install
 
 Python 3.10 or newer, from python.org.
@@ -47,9 +50,11 @@ The 09:23–12:02 block on the 26th is the densest — start there.
 ## 3. Do the clocks agree?
 
 ```
-py ingest.py timecheck D:\footage ^
-   --observations data\parnu-observations-2026-08-26_27.csv
+py ingest.py timecheck D:\footage
 ```
+
+The observation CSV in `data\` is found automatically — nothing to point at.
+Pass `--observations <path>` only to use a different one.
 
 Reads telemetry only. Decodes nothing, writes nothing, takes seconds.
 
@@ -64,8 +69,7 @@ What you're looking for:
 ## 4. Will everything match?
 
 ```
-py ingest.py check D:\footage ^
-   --observations data\parnu-observations-2026-08-26_27.csv
+py ingest.py check D:\footage
 ```
 
 Per chapter: its UTC window, how many observations fall in it, and what
@@ -75,16 +79,15 @@ detection needs tuning before the frames will be any good.
 ## 5. Cut the frames
 
 ```
-py ingest.py ingest D:\footage\GX010042.MP4 ^
-   --campaign parnu-2026 ^
-   --observations data\parnu-observations-2026-08-26_27.csv ^
-   --gnss data\parnu-observations-2026-08-26_27.csv ^
-   --no-upload
+py ingest.py ingest D:\footage\GX010042.MP4
 ```
 
-Video is off by default, so this only cuts the stills — about a minute a
-chapter. `--gnss` with the same file is deliberate: it carries a timestamp, coordinates
-and an accuracy per row, which is exactly a phone position log — and at a
+That is the whole command. The campaign name, the observation CSV and the phone
+position log all come from `data\campaign.json`; video and uploads are both off
+by default, so this only cuts the stills — about a minute a chapter.
+
+The phone log points at the same file on purpose: it carries a timestamp,
+coordinates and an accuracy per row, which is exactly a position log — and at a
 median 3.3 m it beats the camera's own fix.
 
 ## 6. Look at the pictures
@@ -132,9 +135,7 @@ to do next. The ranges are in README.md; the full table is in
 ## If you do want video later
 
 ```
-py ingest.py backfill D:\footage --campaign parnu-2026 ^
-   --observations data\parnu-observations-2026-08-26_27.csv ^
-   --proxy-source lrv
+py ingest.py backfill D:\footage --proxy-source lrv
 ```
 
 `lrv` uses the copy the camera already wrote — seconds a chapter. It reuses the

@@ -168,9 +168,11 @@ class EndToEndTestCase(unittest.TestCase):
             work_dir=str(self.tmp / "work"),
             max_frames=3,
             frame_width=640,
-            # Video is off by default now, so the cases that are *about* the
-            # proxy have to ask for it. TestProxyDefaults covers the default.
+            # Video and uploads are both off by default now, so the cases
+            # that are *about* them have to ask. TestProxyDefaults and
+            # TestUploadDefault cover what happens when nobody asks.
             proxy_source="hd",
+            upload=True,
             proxy_height=240,
             proxy_bitrate_kbps=400,
         )
@@ -336,6 +338,24 @@ class TestEndToEnd(EndToEndTestCase):
         self.run_ingest(job=self.job(force=True))
         # The object is already there at the same size, so nothing is re-sent.
         self.assertEqual(len(self.server.uploads), uploads_before)
+
+
+class TestUploadDefault(EndToEndTestCase):
+    """A fresh install has no .env, so it must not try to upload."""
+
+    def setUp(self):
+        super().setUp()
+        self.settings = self.settings.merged(upload=Settings().upload)
+
+    def test_nothing_is_uploaded_and_the_frames_are_still_cut(self):
+        result, _ = self.run_ingest()
+        self.assertEqual(result.status, "done")
+        self.assertGreater(result.frames, 0)
+        self.assertFalse(result.uploaded)
+        self.assertEqual(self.server.objects, {})
+        self.assertEqual(self.server.tables, {})
+        work = Path(self.settings.work_dir) / "helsinki-2024" / "GX010042"
+        self.assertEqual(len(list((work / "frames").rglob("*.jpg"))), result.frames)
 
 
 class TestProxyDefaults(EndToEndTestCase):

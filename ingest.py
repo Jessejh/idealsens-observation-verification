@@ -24,7 +24,7 @@ from pathlib import Path
 
 from curbtool import gpmf
 from curbtool.batch import find_videos, load_inputs, make_client, run_batch
-from curbtool.config import Settings, SupabaseConfig
+from curbtool.config import Settings, SupabaseConfig, describe_inputs
 from curbtool.media import find_lrv, probe
 from curbtool.observations import ObservationError
 from curbtool.pipeline import IngestJob, Progress, ingest_file
@@ -174,6 +174,7 @@ def cmd_ingest(args: argparse.Namespace) -> int:
         return 2
 
     log(settings.describe())
+    log(describe_inputs(settings))
     log(supabase.describe() if settings.upload else "Supabase: uploads disabled")
 
     summary = run_batch(
