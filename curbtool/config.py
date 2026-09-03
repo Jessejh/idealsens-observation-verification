@@ -99,10 +99,18 @@ class Settings:
     fallback_window_s: float = 5.0
 
     # Frames
-    frame_width: int = 1280
+    # Full HD. 1280 gave 720p stills, which reviewers found too coarse to
+    # judge a cracked kerb from; 1920 is roughly twice the pixels and, because
+    # swscale does the downscale as part of the colour conversion, costs
+    # little more than the smaller size did.
+    frame_width: int = 1920
     frame_quality: int = 88
     frame_interval_s: float = 1.0
     max_frames: int = 9
+    # One image per observation instead of a folder of nine, written flat and
+    # named after the observation's identifier — so a file in the output maps
+    # to a row of the observations CSV at a glance, and back again.
+    single_frame: bool = False
 
     # Proxy
     # none | hd | lrv | auto.
@@ -148,7 +156,9 @@ class Settings:
                 f"tz={self.timezone or 'UTC (naive stamps)'} "
                 f"clock_offset={self.clock_offset_s:+g}s "
                 f"stop<={self.stop_speed_mps:g}m/s>={self.stop_min_duration_s:g}s "
-                f"frames={self.frame_width}px x{self.max_frames} "
+                f"frames={self.frame_width}px "
+                f"x{1 if self.single_frame else self.max_frames}"
+                f"{' (single)' if self.single_frame else ''} "
                 f"proxy={self.proxy_source}/{self.proxy_height}p@"
                 f"{self.proxy_bitrate_kbps}k")
 

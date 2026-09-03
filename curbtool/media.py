@@ -48,10 +48,61 @@ class VideoInfo:
     height: int
     fps: float
     size_bytes: int
+    # Clockwise degrees needed to show the picture the right way up; see
+    # display_rotation(). width/height stay as the frames are *stored*.
+    rotation: int = 0
 
     @property
     def name(self) -> str:
         return self.path.name
+
+    @property
+    def display_size(self) -> tuple[int, int]:
+        """Width and height as a viewer sees them, once rotation is applied."""
+        if self.rotation in (90, 270):
+            return self.height, self.width
+        return self.width, self.height
+
+
+def _normalise_rotation(degrees) -> int:
+    """Round a rotation to the nearest quarter turn, or 0 if it is not one."""
+    try:
+        value = int(round(float(degrees))) % 360
+    except (TypeError, ValueError):
+        return 0
+    return value if value in (90, 180, 270) else 0
+
+
+def display_rotation(frame=None, stream=None) -> int:
+    """Clockwise degrees needed to show the picture the right way up.
+
+    A GoPro mounted upside down records upside-down pixels and writes a
+    display matrix saying so. Every player honours that matrix; a decoder does
+    not. So frames pulled straight out of PyAV come out inverted, and the
+    rotation has to be applied by hand — this is the value to apply.
+
+    ``VideoFrame.rotation`` is FFmpeg's ``av_display_rotation_get``: the
+    counter-clockwise angle the *matrix* turns the frame through. What a
+    viewer needs is the opposite, which is also what FFmpeg's own ``rotate``
+    tag and ffplay's ``get_rotation`` report — hence the negation.
+
+    The stream-level ``rotate`` tag is only a fallback: modern FFmpeg exports
+    the matrix as frame side data and stops writing the tag, and older PyAV
+    (before ``VideoFrame.rotation`` existed) only had the tag. Between them
+    every supported version is covered.
+    """
+    if frame is not None:
+        raw = getattr(frame, "rotation", None)
+        if raw:
+            return _normalise_rotation(-float(raw))
+    if stream is not None:
+        try:
+            tag = stream.metadata.get("rotate")
+        except Exception:
+            tag = None
+        if tag:
+            return _normalise_rotation(tag)
+    return 0
 
 
 # Tried in order when proxy_encoder is "auto". PyAV's bundled FFmpeg has all
@@ -138,11 +189,34 @@ def probe(path: str | Path) -> VideoInfo:
                 height=stream.codec_context.height,
                 fps=fps,
                 size_bytes=path.stat().st_size,
+                rotation=_probe_rotation(container, stream),
             )
     except MediaError:
         raise
     except Exception as exc:  # PyAV raises a family of errors; treat them alike
         raise MediaError(f"{path.name}: cannot open ({exc})") from exc
+
+
+def _probe_rotation(container, stream) -> int:
+    """The display rotation, decoding one frame for it if the tag is absent.
+
+    FFmpeg carries the display matrix as *frame* side data, so on a modern
+    build there is no way to read it without decoding — and build_proxy has to
+    size its output stream before it decodes anything. One keyframe is a few
+    milliseconds against a transcode measured in minutes.
+
+    A file that will not decode is not this function's problem to report:
+    probe() answers geometry, and the real decode raises with a better message.
+    """
+    tag = display_rotation(stream=stream)
+    if tag:
+        return tag
+    try:
+        for frame in container.decode(stream):
+            return display_rotation(frame=frame)
+    except Exception:
+        return 0
+    return 0
 
 
 def find_lrv(path: str | Path) -> Path | None:
@@ -181,8 +255,8 @@ def frame_times(start_s: float, end_s: float, interval_s: float,
     return [start_s + i * step for i in range(count)]
 
 
-def _to_jpeg_image(frame, width: int):
-    """An RGB image, downscaled by swscale rather than by PIL.
+def _to_jpeg_image(frame, width: int, rotation: int = 0):
+    """An RGB image, downscaled by swscale rather than by PIL, turned upright.
 
     ``to_image()`` converts the whole plane to RGB before PIL ever sees it, and
     a PIL LANCZOS resize of a 4K RGB image costs ~200 ms. Handing the target
@@ -190,13 +264,29 @@ def _to_jpeg_image(frame, width: int):
     and forces rgb24 itself — fuses the scale and the colour conversion into
     one C pass: ~9 ms for the same frame, measured.
 
-    The width guard matters: without it the default 1280 would *upscale* a
+    *width* is the width of the **finished** image, so a camera mounted on its
+    side still yields the frame width that was asked for; the scale is worked
+    out in display orientation and applied in stored orientation.
+
+    The width guard matters: without it the default 1920 would *upscale* a
     960-wide .LRV.
+
+    The rotation is passed to PIL as a positive counter-clockwise angle
+    because ``Image.rotate`` only takes its transpose fast path for exactly
+    90, 180 and 270 — ``rotate(-180)`` would resample the whole image for a
+    turn that is a memory copy.
     """
-    if width and frame.width > width:
-        height = round(frame.height * width / frame.width)
-        return frame.to_image(width=width, height=height, interpolation="LANCZOS")
-    return frame.to_image()
+    display_w = frame.height if rotation in (90, 270) else frame.width
+    if width and display_w > width:
+        scale = width / display_w
+        image = frame.to_image(width=max(2, round(frame.width * scale)),
+                               height=max(2, round(frame.height * scale)),
+                               interpolation="LANCZOS")
+    else:
+        image = frame.to_image()
+    if rotation:
+        image = image.rotate((360 - rotation) % 360, expand=True)
+    return image
 
 
 @dataclass
@@ -206,6 +296,14 @@ class FrameRequest:
     targets: Sequence[float]
     out_dir: Path
     prefix: str = "frame"
+    # False writes "<prefix>.jpg" instead of "<prefix>_00.jpg", for the
+    # one-image-per-observation mode where the sequence number carries no
+    # information and only gets in the way of matching a file to a CSV row.
+    numbered: bool = True
+
+    def path_for(self, seq: int) -> Path:
+        name = f"{self.prefix}_{seq:02d}.jpg" if self.numbered else f"{self.prefix}.jpg"
+        return Path(self.out_dir) / name
 
 
 def _plan_segments(requests: Sequence[FrameRequest],
@@ -278,6 +376,10 @@ def _extract_pass(video: Path, requests: Sequence[FrameRequest], width: int,
 
             frames = None                   # the live decode generator
             position = -math.inf            # time of the last decoded frame
+            # Resolved from the first frame actually saved, then reused: the
+            # display matrix is per-frame side data, but it does not change
+            # within a chapter, and reading it is not free.
+            rotation: int | None = display_rotation(stream=stream) or None
 
             for segment in segments:
                 if cancelled:
@@ -311,9 +413,11 @@ def _extract_pass(video: Path, requests: Sequence[FrameRequest], width: int,
                         # targets belonging to different observations. Scale it
                         # once and save it as many times as it is wanted.
                         if image is None:
-                            image = _to_jpeg_image(frame, width)
+                            if rotation is None:
+                                rotation = display_rotation(frame=frame, stream=stream)
+                            image = _to_jpeg_image(frame, width, rotation)
                         request = requests[request_index]
-                        path = Path(request.out_dir) / f"{request.prefix}_{seq:02d}.jpg"
+                        path = request.path_for(seq)
                         image.save(path, "JPEG", quality=quality,
                                    optimize=optimize, progressive=progressive)
                         slots[request_index][seq] = (at, path)
@@ -333,7 +437,7 @@ def _extract_pass(video: Path, requests: Sequence[FrameRequest], width: int,
 
 
 def extract_frames_multi(video: str | Path, requests: Sequence[FrameRequest],
-                         width: int = 1280, quality: int = 88,
+                         width: int = 1920, quality: int = 88,
                          optimize: bool = True, progressive: bool = False,
                          seek_gap_s: float = SEEK_GAP_S,
                          on_frame: Callable[[int, int, int, float, Path], None] | None = None,
@@ -359,7 +463,7 @@ def extract_frames_multi(video: str | Path, requests: Sequence[FrameRequest],
 
 
 def extract_frames(video: str | Path, targets: Sequence[float], out_dir: str | Path,
-                   prefix: str = "frame", width: int = 1280, quality: int = 88,
+                   prefix: str = "frame", width: int = 1920, quality: int = 88,
                    optimize: bool = True, progressive: bool = False,
                    on_frame: Callable[[int, int, float, Path], None] | None = None,
                    should_cancel: Callable[[], bool] | None = None) -> list[tuple[float, Path]]:
@@ -407,13 +511,24 @@ def build_proxy(source: str | Path, out_path: str | Path, height: int = 720,
     # The caller has usually probed already; probing again reopens the file for
     # nothing.
     info = info or probe(source)
-    target_h = min(height, info.height) if info.height else height
+    # Sized in display orientation, so "720p" means 720 lines as a viewer sees
+    # them even when the camera was mounted on its side.
+    display_w, display_h = info.display_size
+    target_h = min(height, display_h) if display_h else height
     target_h -= target_h % 2
-    if info.height:
-        target_w = round(info.width * target_h / info.height)
+    if display_h:
+        target_w = round(display_w * target_h / display_h)
     else:
         target_w = round(target_h * 16 / 9)
     target_w -= target_w % 2
+
+    rotation = info.rotation
+    # The frames are scaled before they are turned, so swscale is given the
+    # size in stored orientation.
+    if rotation in (90, 270):
+        scale_w, scale_h = target_h, target_w
+    else:
+        scale_w, scale_h = target_w, target_h
 
     cancelled = False
     used_encoder = "h264"
@@ -431,8 +546,21 @@ def build_proxy(source: str | Path, out_path: str | Path, height: int = 720,
             codec_name, codec_options = available_encoder(encoder)
             used_encoder = codec_name
             out_stream = dst.add_stream(codec_name, rate=rate)
-            out_stream.width = target_w
-            out_stream.height = target_h
+            # Copying the source's display matrix onto the output costs nothing
+            # and every player honours it. Only where PyAV is too old to write
+            # one does the rotation get baked into the pixels, which means an
+            # RGB round trip per frame — correct, but noticeably slower, so it
+            # is the fallback rather than the rule.
+            bake_rotation = bool(rotation)
+            if rotation and hasattr(out_stream, "set_display_rotation"):
+                # Negated back into the counter-clockwise convention the
+                # matrix itself uses; see display_rotation().
+                out_stream.set_display_rotation(-rotation)
+                bake_rotation = False
+            if bake_rotation:
+                out_stream.width, out_stream.height = target_w, target_h
+            else:
+                out_stream.width, out_stream.height = scale_w, scale_h
             out_stream.pix_fmt = "yuv420p"
             out_stream.bit_rate = bitrate_kbps * 1000
             if codec_options:
@@ -478,7 +606,17 @@ def build_proxy(source: str | Path, out_path: str | Path, height: int = 720,
                     continue                    # dropped to reach the target fps
                 next_wanted += frame_step
 
-                frame = frame.reformat(width=target_w, height=target_h, format="yuv420p")
+                if bake_rotation:
+                    import av as _av
+                    # target_w, not scale_w: _to_jpeg_image sizes the finished
+                    # picture, after the turn.
+                    image = _to_jpeg_image(frame, target_w, rotation)
+                    turned = _av.VideoFrame.from_image(image)
+                    turned.pts, turned.time_base = frame.pts, frame.time_base
+                    frame = turned.reformat(format="yuv420p")
+                else:
+                    frame = frame.reformat(width=scale_w, height=scale_h,
+                                           format="yuv420p")
                 if fps:
                     # Dropping frames leaves gaps in the original timestamps, so
                     # the kept ones are renumbered at the output rate. Left alone

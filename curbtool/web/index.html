@@ -350,6 +350,13 @@ dialog::backdrop { background: rgba(0,0,0,0.45); }
       </div>
     </div>
     <label class="check">
+      <input type="checkbox" id="s-single_frame" data-setting="single_frame">
+      One image per observation, named after its CSV row
+    </label>
+    <p class="hint">Off: a folder of frames around each stop. On: a single picture
+      taken at the middle of the stop, written straight into <code>frames\</code>
+      as <code>row184.jpg</code> — row 184 of the observations CSV.</p>
+    <label class="check">
       <input type="checkbox" id="s-upload" data-setting="upload">
       Upload to Supabase <span class="badge" id="sb-badge">…</span>
     </label>

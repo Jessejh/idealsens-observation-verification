@@ -237,3 +237,150 @@ class TestErrors(ExtractTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestRotation(unittest.TestCase):
+    """A GoPro mounted upside down must not produce upside-down evidence.
+
+    The camera records inverted pixels and a display matrix saying so. Players
+    honour the matrix; a decoder does not — so without this the frames come out
+    the wrong way up while the same file looks fine in VLC, which is exactly
+    how the defect reached the operator.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.dir = Path(tempfile.mkdtemp())
+        # 180 in the matrix's own counter-clockwise convention: an inverted
+        # camera. The clip carries a white band across its top rows as stored,
+        # so "was it turned?" is a question about pixels rather than metadata.
+        cls.inverted = write_clip(cls.dir / "GX010099.MP4", 4.0,
+                                  width=640, height=360, rotation=180)
+        cls.upright = write_clip(cls.dir / "GX010100.MP4", 4.0,
+                                 width=640, height=360)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.dir, ignore_errors=True)
+
+    def setUp(self):
+        self.work = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.work, ignore_errors=True)
+
+    @staticmethod
+    def band_row(path: Path) -> str:
+        """Whether the white band ended up at the top or the bottom."""
+        from PIL import Image, ImageStat
+        with Image.open(path) as image:
+            width, height = image.size
+            top = ImageStat.Stat(image.crop((0, 0, width, 3)).convert("L")).mean[0]
+            bottom = ImageStat.Stat(
+                image.crop((0, height - 3, width, height)).convert("L")).mean[0]
+        return "top" if top > bottom else "bottom"
+
+    def test_an_inverted_clip_is_turned_the_right_way_up(self):
+        written = media.extract_frames(self.inverted, [1.0], self.work / "r",
+                                       prefix="f", width=320)
+        self.assertEqual(self.band_row(written[0][1]), "bottom",
+                         "the band was at the top as stored, so an upright "
+                         "frame must show it at the bottom")
+
+    def test_an_upright_clip_is_left_alone(self):
+        written = media.extract_frames(self.upright, [1.0], self.work / "u",
+                                       prefix="f", width=320)
+        with av.open(str(self.upright)) as container:
+            stream = container.streams.video[0]
+            self.assertEqual(media.display_rotation(stream=stream), 0)
+        self.assertTrue(written[0][1].is_file())
+
+    def test_probe_reports_the_rotation_and_the_display_size(self):
+        info = media.probe(self.inverted)
+        self.assertEqual(info.rotation, 180)
+        # A half turn does not swap the axes.
+        self.assertEqual(info.display_size, (640, 360))
+        self.assertEqual(media.probe(self.upright).rotation, 0)
+
+    def test_a_quarter_turn_swaps_the_display_axes(self):
+        clip = write_clip(self.work / "GX010101.MP4", 2.0,
+                          width=640, height=360, rotation=90)
+        info = media.probe(clip)
+        # 270, not 90: the fixture writes the matrix in the counter-clockwise
+        # convention the matrix uses, and probe() reports the clockwise turn a
+        # viewer has to apply. Asserting the exact value is the point — a sign
+        # error here would put every sideways frame in the wrong quarter.
+        self.assertEqual(info.rotation, 270)
+        self.assertEqual(info.display_size, (360, 640))
+        # frame_width means the width of the finished picture, so a sideways
+        # clip asked for 180 px wide must come back 180 px wide, not 180 tall.
+        from PIL import Image
+        written = media.extract_frames(clip, [1.0], self.work / "q",
+                                       prefix="f", width=180)
+        with Image.open(written[0][1]) as image:
+            self.assertEqual(image.size, (180, 320))
+
+    def test_rotation_is_normalised_to_quarter_turns(self):
+        self.assertEqual(media._normalise_rotation(-180), 180)
+        self.assertEqual(media._normalise_rotation(-90), 270)
+        self.assertEqual(media._normalise_rotation(359.6), 0)
+        self.assertEqual(media._normalise_rotation(37), 0)
+        self.assertEqual(media._normalise_rotation(None), 0)
+        self.assertEqual(media._normalise_rotation("90"), 90)
+
+
+class TestSingleImageNaming(ExtractTestCase):
+    def test_an_unnumbered_request_writes_one_file_named_for_the_prefix(self):
+        request = media.FrameRequest([2.0], self.work, "row184", numbered=False)
+        media.extract_frames_multi(self.clip, [request], width=320)
+        self.assertTrue((self.work / "row184.jpg").is_file())
+        self.assertFalse((self.work / "row184_00.jpg").exists())
+
+    def test_several_observations_share_one_flat_folder(self):
+        requests = [media.FrameRequest([1.0], self.work, "row2", numbered=False),
+                    media.FrameRequest([3.0], self.work, "row9", numbered=False)]
+        media.extract_frames_multi(self.clip, requests, width=320)
+        self.assertEqual(sorted(p.name for p in self.work.glob("*.jpg")),
+                         ["row2.jpg", "row9.jpg"])
+
+
+class TestProxyRotation(unittest.TestCase):
+    """The proxy has to arrive the right way up too, or review is upside down."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.dir = Path(tempfile.mkdtemp())
+        cls.inverted = write_clip(cls.dir / "GX010098.MP4", 2.0,
+                                  width=640, height=360, rotation=180)
+        cls.sideways = write_clip(cls.dir / "GX010097.MP4", 2.0,
+                                  width=640, height=360, rotation=90)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.dir, ignore_errors=True)
+
+    def setUp(self):
+        self.work = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.work, ignore_errors=True)
+
+    def proxy(self, source, height=180):
+        out = self.work / f"{source.stem}_proxy.mp4"
+        media.build_proxy(source, out, height=height, bitrate_kbps=300,
+                          encoder="software")
+        return media.probe(out)
+
+    def test_the_rotation_survives_into_the_proxy(self):
+        self.assertEqual(self.proxy(self.inverted).rotation, 180)
+
+    def test_the_requested_height_is_counted_in_display_lines(self):
+        # A sideways chapter asked for 180p must give a viewer 180 lines, not
+        # 180 lines of a picture that is then turned onto its side.
+        info = self.proxy(self.sideways, height=180)
+        self.assertEqual(info.rotation, 270)
+        self.assertEqual(info.display_size[1], 180)
+
+    def test_an_upright_proxy_carries_no_rotation(self):
+        upright = write_clip(self.work / "GX010096.MP4", 2.0, width=640, height=360)
+        self.assertEqual(self.proxy(upright).rotation, 0)

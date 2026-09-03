@@ -465,3 +465,64 @@ class TestBatchSummary(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSingleFrameMode(EndToEndTestCase):
+    """One image per observation, named so it maps onto the CSV at a glance."""
+
+    def setUp(self):
+        super().setUp()
+        self.settings = self.settings.merged(single_frame=True, upload=False,
+                                             proxy_source="none")
+
+    def test_one_image_per_observation_named_for_its_identifier(self):
+        result, _ = self.run_ingest()
+
+        self.assertEqual(result.status, "done")
+        self.assertEqual(result.frames, 2, "one frame each, not max_frames each")
+        frames = Path(self.settings.work_dir) / "helsinki-2024" / "GX010042" / "frames"
+        self.assertEqual(sorted(p.name for p in frames.glob("*.jpg")),
+                         ["obs-1.jpg", "obs-2.jpg"])
+        # Flat: no per-observation folders to open before seeing anything.
+        self.assertEqual([p for p in frames.iterdir() if p.is_dir()], [])
+
+    def test_the_image_is_the_middle_of_the_stop(self):
+        # The one frame has to be the one the folder mode puts in the middle
+        # of its set — that is where the operator was framing the target.
+        # delta_s is measured from the middle of the stop window, so it is the
+        # assertion: cutting the first frame of the window instead would show
+        # the approach rather than the thing.
+        self.settings = self.settings.merged(upload=True)
+        self.run_ingest()
+
+        rows = self.server.tables["frames"]
+        self.assertEqual(len(rows), 2)
+        for row in rows:
+            self.assertLess(abs(row["delta_s"]), 0.5,
+                            f"{row['delta_s']}s from the middle of the stop")
+
+    def test_a_second_run_reuses_the_images_rather_than_recutting_them(self):
+        self.run_ingest()
+        frames = Path(self.settings.work_dir) / "helsinki-2024" / "GX010042" / "frames"
+        stamps = {p.name: p.stat().st_mtime_ns for p in frames.glob("*.jpg")}
+        self.assertEqual(len(stamps), 2)
+
+        result, _ = self.run_ingest(job=self.job(force=True, reuse_media=True))
+        self.assertEqual(result.status, "done")
+        self.assertEqual({p.name: p.stat().st_mtime_ns for p in frames.glob("*.jpg")},
+                         stamps, "the flat layout must still be recognised as done")
+
+    def test_an_awkward_identifier_still_yields_a_usable_filename(self):
+        from curbtool import pipeline
+
+        class Match:
+            pass
+
+        match = Match()
+        match.observation = Observation(external_id="A/B:C 12", utc=BASE,
+                                        lat=None, lon=None, row_number=7)
+        self.assertEqual(pipeline._frame_stem(match), "A-B-C-12")
+
+        match.observation = Observation(external_id="///", utc=BASE,
+                                        lat=None, lon=None, row_number=7)
+        self.assertEqual(pipeline._frame_stem(match), "row7")

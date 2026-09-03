@@ -52,11 +52,18 @@ def telemetry_payloads(rows, hz: int = 1):
 
 def write_clip(path: Path, duration_s: float, fps: int = 30,
                width: int = 960, height: int = 540,
-               creation_time: str | None = None) -> Path:
+               creation_time: str | None = None,
+               rotation: int = 0) -> Path:
     """A small real MP4 — kept modest so the suite stays quick.
 
     *creation_time* fills the container stamp, letting a test reproduce a
     camera whose timezone was set to something other than UTC.
+
+    *rotation* writes a display matrix, reproducing a camera mounted upside
+    down. It is given in the counter-clockwise convention the matrix itself
+    uses, so ``rotation=180`` is what a GoPro records when inverted. The clip
+    then also carries a white band across its top rows *as stored*, which is
+    the only way a test can tell an upright frame from a turned one.
     """
     import av
     import numpy as np
@@ -72,6 +79,8 @@ def write_clip(path: Path, duration_s: float, fps: int = 30,
         stream.width, stream.height, stream.pix_fmt = width, height, "yuv420p"
         stream.bit_rate = 2_000_000
         stream.options = {"preset": "ultrafast", "g": "15"}
+        if rotation:
+            stream.set_display_rotation(rotation)
         total = int(duration_s * fps)
         for i in range(total):
             image = np.zeros((height, width, 3), dtype=np.uint8)
@@ -79,6 +88,8 @@ def write_clip(path: Path, duration_s: float, fps: int = 30,
             image[:, :, 1] = 60
             bar = int((i / max(1, total)) * width)
             image[height // 2 - 30:height // 2 + 30, max(0, bar - 20):bar + 20] = 255
+            if rotation:
+                image[:8, :, :] = 255       # the "this way up" mark
             frame = av.VideoFrame.from_ndarray(image, format="rgb24")
             frame.pts = i
             frame.time_base = Fraction(1, fps)

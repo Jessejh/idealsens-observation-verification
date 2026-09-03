@@ -158,6 +158,20 @@ class TestDefaults(unittest.TestCase):
     def test_video_is_off(self):
         self.assertEqual(Settings().proxy_source, "none")
 
+    def test_frames_are_full_hd(self):
+        # 1280 gave 720p stills, which reviewers found too coarse to grade a
+        # cracked kerb from.
+        self.assertEqual(Settings().frame_width, 1920)
+
+    def test_a_folder_of_frames_is_still_the_default(self):
+        # The single image is the deliberate choice, not the fallback: nine
+        # frames around the stop is what rescues a tag whose timing is off.
+        self.assertFalse(Settings().single_frame)
+
+    def test_describe_says_when_only_one_image_is_being_cut(self):
+        self.assertIn("(single)", Settings(single_frame=True).describe())
+        self.assertNotIn("(single)", Settings().describe())
+
     def test_the_real_bundle_resolves_the_shipped_campaign(self):
         # Guards the thing the operator actually hit: unpack, press Check.
         found = bundled_defaults()

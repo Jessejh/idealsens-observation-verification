@@ -99,6 +99,20 @@ explorer work\parnu-2026\GX010042\frames
 One folder per observation. The middle frame of each set is the middle of the
 stop, which is where the operator was framing the target.
 
+Prefer one picture per observation? Add `--single-frame`:
+
+```
+py ingest.py ingest D:\footage\GX010042.MP4 --single-frame --force
+```
+
+That writes the middle frame only, flat into `frames\`, named after the
+observation's identifier — `row184.jpg` is row 184 of the observations CSV,
+counting the header as row 1. Open the CSV, note the row, open that file — or
+go the other way from a picture you want to query.
+
+Nine frames a stop is the safer default while the timing is still unproven;
+switch to one once step 6 looks right.
+
 **This is the whole point.** Open a dozen. If they show broken kerbs, potholes
 and lampposts in the way, the pipeline works and you can run the rest. If they
 show the road ahead, stop and tune:
@@ -109,7 +123,8 @@ show the road ahead, stop and tune:
 | Frames while still moving | `--stop-speed 1.2` (raise it — GPS is noisy at rest) |
 | Stops being missed entirely | `--stop-min-duration 2` (lower it) |
 | Too few frames per spot | `--max-frames 15` |
-| Want them sharper | `--frame-width 1920` |
+| Want them sharper | `--frame-width 2560` (1920 is the default) |
+| Upside down | nothing — the camera's own rotation is applied automatically |
 | Curious where the time goes | `py tools\bench.py D:\footage\GX010042.MP4` |
 
 Re-run the same command with `--force` after each change.

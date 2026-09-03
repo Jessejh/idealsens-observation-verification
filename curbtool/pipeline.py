@@ -456,12 +456,23 @@ def _extract_all_frames(job: IngestJob, matches: Sequence[Match], frame_dir: Pat
     """
     check()
     settings = job.settings
-    plans = [(match,
-              media.frame_times(match.window_start_s, match.window_end_s,
-                                settings.frame_interval_s, settings.max_frames),
-              frame_dir / _frame_folder(index, match))
-             for index, match in enumerate(matches, start=1)]
-    total = sum(len(targets) for _, targets, _ in plans)
+    single = settings.single_frame
+    plans: list[tuple[Match, list[float], Path, str]] = []
+    for index, match in enumerate(matches, start=1):
+        if single:
+            # The middle of the stop, which is where the operator was framing
+            # the target — the same frame the folder mode puts in the middle
+            # of its set. Flat in frames/, named for the CSV row.
+            plans.append((match, [match.window_mid_s], frame_dir,
+                          _frame_stem(match)))
+        else:
+            plans.append((match,
+                          media.frame_times(match.window_start_s,
+                                            match.window_end_s,
+                                            settings.frame_interval_s,
+                                            settings.max_frames),
+                          frame_dir / _frame_folder(index, match), "f"))
+    total = sum(len(targets) for _, targets, _, _ in plans)
     if total == 0:
         report("frames", 1, 1, "no observations in this file")
         return 0
@@ -470,8 +481,9 @@ def _extract_all_frames(job: IngestJob, matches: Sequence[Match], frame_dir: Pat
     # whose frames are all on disk never opens the video at all.
     written: list[list[tuple[float, Path]] | None] = [None] * len(plans)
     pending: list[int] = []
-    for i, (_, targets, out_dir) in enumerate(plans):
-        found = _existing_frames(out_dir, targets) if job.reuse_media else None
+    for i, (_, targets, out_dir, prefix) in enumerate(plans):
+        found = (_existing_frames(out_dir, targets, prefix, not single)
+                 if job.reuse_media else None)
         if found is not None:
             written[i] = found
         else:
@@ -491,7 +503,8 @@ def _extract_all_frames(job: IngestJob, matches: Sequence[Match], frame_dir: Pat
         try:
             cut = media.extract_frames_multi(
                 job.video,
-                [media.FrameRequest(plans[i][1], plans[i][2], "f") for i in pending],
+                [media.FrameRequest(plans[i][1], plans[i][2], plans[i][3],
+                                    numbered=not single) for i in pending],
                 width=settings.frame_width, quality=settings.frame_quality,
                 on_frame=on_frame, should_cancel=lambda: _cancelled(check))
         except media.Cancelled as exc:
@@ -502,7 +515,7 @@ def _extract_all_frames(job: IngestJob, matches: Sequence[Match], frame_dir: Pat
             written[slot] = frames
 
     done = 0
-    for (match, _, _), frames in zip(plans, written):
+    for (match, _, _, _), frames in zip(plans, written):
         for seq, (actual_s, path) in enumerate(frames or []):
             match.frames.append((seq, actual_s - match.window_mid_s, actual_s, path))
         done += len(frames or [])
@@ -524,12 +537,35 @@ def _frame_folder(index: int, match: Match) -> str:
     return f"{index:03d}_{stamp}_{category or 'obs'}"
 
 
-def _existing_frames(out_dir: Path, targets: Sequence[float]
-                     ) -> list[tuple[float, Path]] | None:
+def _frame_stem(match: Match) -> str:
+    """A filename that points straight back at a row of the observations CSV.
+
+    The whole value of the single-image mode is that ``row184.jpg`` in the
+    output folder and row 184 of the CSV are the same thing, with nothing to
+    look up. So the name is the observation's own identifier — the same string
+    the database keys its ``external_id`` on — and not a re-derived one.
+
+    The Pärnu export carries no ID column, so loading falls back to ``rowN``
+    numbered by CSV line, with the header as line 1. That is already the most
+    direct link there is; where a campaign does have IDs, theirs is used
+    instead.
+    """
+    external = match.observation.external_id or ""
+    stem = re.sub(r"[^A-Za-z0-9_.-]+", "-", external).strip("-.")[:80]
+    return stem or f"row{match.observation.row_number}"
+
+
+def _existing_frames(out_dir: Path, targets: Sequence[float], prefix: str = "f",
+                     numbered: bool = True) -> list[tuple[float, Path]] | None:
     """Frames already extracted for this observation, if the full set is there."""
     if not out_dir.is_dir():
         return None
-    paths = sorted(out_dir.glob("f_*.jpg"))
+    if not numbered:
+        # One flat file per observation: the folder holds every observation's
+        # image, so a glob would match all of them. Name the one file instead.
+        path = out_dir / f"{prefix}.jpg"
+        return [(targets[0], path)] if targets and path.is_file() else None
+    paths = sorted(out_dir.glob(f"{prefix}_*.jpg"))
     if len(paths) != len(targets):
         return None
     return list(zip(targets, paths))

@@ -280,9 +280,10 @@ flags win over the file. `python ingest.py settings` prints the current set;
 | `stop_min_duration_s` | `--stop-min-duration` | 3.0 | Shortest run that counts as a stop. |
 | `stop_tolerance_s` | — | 2.0 | How far outside a stop a tag may fall and still snap to it. |
 | `fallback_window_s` | — | 5.0 | Half-window used when a tag snaps to no stop. |
-| `frame_width` | `--frame-width` | 1280 | Extracted frame width. |
+| `frame_width` | `--frame-width` | 1920 | Extracted frame width, after any rotation. Full HD. |
 | `frame_quality` | — | 88 | JPEG quality for extracted frames. |
-| `max_frames` | `--max-frames` | 9 | Cap per observation. |
+| `max_frames` | `--max-frames` | 9 | Cap per observation. Ignored when `single_frame` is on. |
+| `single_frame` | `--single-frame`, `--all-frames` | off | One image per observation instead of a folder, written flat into `frames/` as `<external_id>.jpg`. |
 | `frame_interval_s` | `--frame-interval` | 1.0 | Spacing within a stop window. |
 | `proxy_height` | `--proxy-height` | 720 | |
 | `proxy_bitrate_kbps` | `--proxy-bitrate` | 2500 | |

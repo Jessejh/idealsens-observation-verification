@@ -195,6 +195,20 @@ class CurbToolGUI:
                                   "Shortest stationary period that counts as a stop.")
         row = self._add_entry_row(box, row, "frame_width", "Frame width (px)")
         row = self._add_entry_row(box, row, "max_frames", "Max frames / observation")
+
+        self.vars["single_frame"] = tk.BooleanVar()
+        single = ttk.Checkbutton(box, text="One image per observation",
+                                 variable=self.vars["single_frame"])
+        single.grid(row=row, column=0, columnspan=2, sticky="w", pady=2)
+        self._tooltip(single,
+                      "One picture per observation instead of a folder of frames, "
+                      "taken at the middle of the stop.\n\n"
+                      "They land flat in frames\\ named after the observation's ID "
+                      "— row184.jpg is row 184 of the observations CSV — so a "
+                      "picture and its CSV row match on sight.\n\n"
+                      "Max frames / observation is ignored while this is on.")
+        row += 1
+
         row = self._add_entry_row(box, row, "proxy_height", "Proxy height (px)")
         row = self._add_entry_row(box, row, "proxy_bitrate_kbps", "Proxy bitrate (kbit/s)")
 

@@ -108,6 +108,8 @@ def settings_from_args(args: argparse.Namespace) -> Settings:
         stop_min_duration_s=getattr(args, "stop_min_duration", None),
         frame_width=getattr(args, "frame_width", None),
         max_frames=getattr(args, "max_frames", None),
+        single_frame=(True if getattr(args, "single_frame", False)
+                      else (False if getattr(args, "all_frames", False) else None)),
         frame_interval_s=getattr(args, "frame_interval", None),
         proxy_height=getattr(args, "proxy_height", None),
         proxy_bitrate_kbps=getattr(args, "proxy_bitrate", None),
@@ -136,6 +138,12 @@ def add_common_arguments(parser: argparse.ArgumentParser) -> None:
                         help="spacing between frames within a stop window")
     parser.add_argument("--max-frames", type=int,
                         help="cap on frames per observation")
+    parser.add_argument("--single-frame", action="store_true",
+                        help="one image per observation, written flat into frames/ and\n"
+                             "named after the observation's CSV identifier")
+    parser.add_argument("--all-frames", action="store_true",
+                        help="a folder of frames per observation (the default); "
+                             "overrides a saved --single-frame")
     parser.add_argument("--proxy-height", type=int, help="proxy height in pixels")
     parser.add_argument("--proxy-bitrate", type=int, metavar="KBPS",
                         help="proxy video bitrate")
