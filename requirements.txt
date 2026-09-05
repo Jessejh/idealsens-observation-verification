@@ -1,0 +1,16 @@
+# PyAV ships FFmpeg as linked libraries rather than calling an ffmpeg binary,
+# which is the only reason media work is possible on the operator's machine:
+# AppLocker group policy blocks unsigned executables. Never shell out to ffmpeg.
+#
+# Stream-copy remuxing of .LRV companions needs the template API, which PyAV
+# spelled add_stream(template=...) until v14 and add_stream_from_template()
+# from v14 on (the keyword was dropped in v15). curbtool.media handles both,
+# so any of these work. Verified end to end against av 18.1.0.
+av>=12.0
+pillow>=10.0
+requests>=2.31
+python-dotenv>=1.0
+
+# Only needed for --timezone on Windows, which has no system timezone database.
+# Pure Python, no compiler. Skip it if your export already carries UTC.
+tzdata>=2024.1; sys_platform == "win32"

@@ -1,0 +1,608 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>curbtool</title>
+<!-- Inline so the browser never asks the server for /favicon.ico, which would
+     arrive without the access token and be refused. -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%2312556f'/%3E%3Cpath d='M7 21h18M7 21v-4a4 4 0 014-4h10' stroke='%23fff' stroke-width='2.5' fill='none' stroke-linecap='round'/%3E%3Ccircle cx='23' cy='11' r='2.5' fill='%23fff'/%3E%3C/svg%3E">
+<style>
+/* System fonts only: this page is served from the operator's own machine and
+   must render identically with the network unplugged. */
+:root {
+  --ink: #101820; --ink-2: #4c5a66; --ink-3: #6f7d87;
+  --ground: #e7ebec; --surface: #f6f8f8; --surface-2: #dfe6e8;
+  --line: #c5d0d5; --line-soft: #d8e0e3;
+  --accent: #12556f; --accent-ink: #0c3d51; --accent-wash: #d9e7ed;
+  --warn: #8f3a2a; --warn-wash: #f5e3de;
+  --go: #2c6249; --go-wash: #dbe9e1;
+  --amber: #8a6410; --amber-wash: #f4ead3;
+  --term-bg: #0d161b; --term-ink: #cfdde3; --term-dim: #7c9099;
+  --sans: ui-sans-serif, "Segoe UI", system-ui, Roboto, Helvetica, Arial, sans-serif;
+  --mono: ui-monospace, "Cascadia Mono", Consolas, "DejaVu Sans Mono", monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ink: #dbe4e7; --ink-2: #97a8b1; --ink-3: #74858e;
+    --ground: #0d1316; --surface: #141d22; --surface-2: #1b262c;
+    --line: #26333a; --line-soft: #1c272d;
+    --accent: #63aecb; --accent-ink: #8fc7dd; --accent-wash: #132a35;
+    --warn: #e09986; --warn-wash: #33201a;
+    --go: #7fbb9c; --go-wash: #16261f;
+    --amber: #d6ad5c; --amber-wash: #2b2415;
+    --term-bg: #070d10; --term-ink: #c6d5db; --term-dim: #6b7f88;
+  }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0; background: var(--ground); color: var(--ink);
+  font: 14px/1.5 var(--sans); -webkit-font-smoothing: antialiased;
+  display: flex; flex-direction: column;
+}
+button { font: inherit; }
+h1, h2, h3 { margin: 0; font-weight: 600; }
+
+/* ---------- top bar ---------- */
+header {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 10px 16px; background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+.brand { font-weight: 700; letter-spacing: -0.01em; font-size: 15px; }
+.brand span { color: var(--ink-3); font-weight: 400; font-size: 12px; margin-left: 6px; }
+.spacer { flex: 1; }
+
+.btn {
+  border: 1px solid var(--line); background: var(--surface-2); color: var(--ink);
+  padding: 7px 14px; border-radius: 4px; cursor: pointer; font-weight: 500;
+  display: inline-flex; align-items: center; gap: 7px;
+}
+.btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent-ink); }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn.primary:hover:not(:disabled) { filter: brightness(1.12); color: #fff; }
+.btn.danger { color: var(--warn); border-color: var(--warn); background: transparent; }
+.btn.ghost { background: transparent; }
+.btn small { font-weight: 400; color: inherit; opacity: 0.75; }
+
+/* ---------- layout ---------- */
+main { flex: 1; display: grid; grid-template-columns: 1fr 340px; min-height: 0; }
+.left { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.right {
+  border-left: 1px solid var(--line); background: var(--surface);
+  overflow-y: auto; padding: 14px 16px 28px;
+}
+.panel-title {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em;
+  color: var(--ink-3); font-weight: 600; margin: 0 0 8px;
+  font-family: var(--mono);
+}
+
+/* ---------- status strip ---------- */
+.status {
+  display: flex; align-items: center; gap: 12px;
+  padding: 8px 16px; border-bottom: 1px solid var(--line-soft);
+  background: var(--surface); font-size: 13px;
+}
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--ink-3); flex: none; }
+.dot.busy { background: var(--accent); animation: pulse 1.1s ease-in-out infinite; }
+.dot.ready { background: var(--go); }
+.dot.problem { background: var(--warn); }
+@keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: 0.3 } }
+@media (prefers-reduced-motion: reduce) { .dot.busy { animation: none } }
+.activity { color: var(--ink-2); font-family: var(--mono); font-size: 12px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
+.bar { height: 4px; background: var(--surface-2); }
+.bar > div { height: 100%; background: var(--accent); width: 0; transition: width 0.25s; }
+
+/* ---------- files ---------- */
+.files-wrap { flex: 1 1 40%; overflow: auto; min-height: 110px; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+thead th {
+  position: sticky; top: 0; z-index: 1;
+  background: var(--surface-2); text-align: left; padding: 7px 12px;
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--ink-3); font-family: var(--mono); font-weight: 600;
+  border-bottom: 1px solid var(--line); white-space: nowrap;
+}
+tbody td { padding: 6px 12px; border-bottom: 1px solid var(--line-soft); vertical-align: middle; }
+tbody tr:hover { background: var(--surface); }
+td.num { font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap;
+  font-family: var(--mono); font-size: 12px; color: var(--ink-2); }
+.name { font-family: var(--mono); font-size: 12.5px; }
+.pill {
+  display: inline-block; padding: 1px 8px; border-radius: 10px;
+  font-size: 11px; font-weight: 600; font-family: var(--mono);
+  border: 1px solid transparent; white-space: nowrap;
+}
+.pill.queued  { color: var(--ink-3); border-color: var(--line); }
+.pill.running { color: var(--accent-ink); background: var(--accent-wash); border-color: var(--accent); }
+.pill.done    { color: var(--go); background: var(--go-wash); border-color: var(--go); }
+.pill.skipped { color: var(--ink-3); background: var(--surface-2); border-color: var(--line); }
+.pill.failed  { color: var(--warn); background: var(--warn-wash); border-color: var(--warn); }
+.pill.cancelled { color: var(--amber); background: var(--amber-wash); border-color: var(--amber); }
+.minibar { width: 90px; height: 6px; background: var(--surface-2); border-radius: 3px; overflow: hidden; }
+.minibar > div { height: 100%; background: var(--accent); width: 0; }
+.empty { padding: 36px 20px; text-align: center; color: var(--ink-3); }
+.empty p { max-width: 42ch; margin: 0 auto 14px; }
+
+/* ---------- problems ---------- */
+/* flex:none so the flex layout cannot squeeze this and clip the fix text —
+   an error the operator can only half-read is worse than no error at all. */
+.problems { flex: none; border-top: 1px solid var(--line);
+  background: var(--warn-wash); max-height: 34vh; overflow: auto; }
+.problems:empty { display: none; }
+.problem {
+  border-bottom: 1px solid rgba(0,0,0,0.07); padding: 10px 16px;
+  display: flex; gap: 12px; align-items: flex-start;
+}
+.problem .code {
+  font-family: var(--mono); font-weight: 700; color: var(--warn);
+  border: 1px solid var(--warn); border-radius: 3px; padding: 1px 6px;
+  font-size: 12px; flex: none;
+}
+.problem.soft { background: var(--amber-wash); }
+.problem.soft .code { color: var(--amber); border-color: var(--amber); }
+.problem .body { min-width: 0; }
+.problem h3 { font-size: 13.5px; }
+.problem p { margin: 3px 0 0; font-size: 12.5px; color: var(--ink-2); }
+.problem .fix { color: var(--ink); }
+.problem .detail {
+  font-family: var(--mono); font-size: 11.5px; color: var(--ink-3);
+  word-break: break-word; margin-top: 5px;
+}
+.problem .where { font-family: var(--mono); font-size: 11px; color: var(--ink-3); }
+
+/* ---------- log ---------- */
+.log-wrap { flex: 1 1 60%; display: flex; flex-direction: column; min-height: 120px;
+  border-top: 1px solid var(--line); }
+.log-head { display: flex; align-items: center; gap: 10px; padding: 6px 16px;
+  background: var(--surface); border-bottom: 1px solid var(--line-soft); }
+.log {
+  flex: 1; overflow: auto; background: var(--term-bg); color: var(--term-ink);
+  font-family: var(--mono); font-size: 12px; line-height: 1.65; padding: 10px 16px;
+  margin: 0; white-space: pre-wrap; word-break: break-word;
+}
+.log .t { color: var(--term-dim); }
+.log .error { color: #f0a08c; }
+.log .warn { color: #e8c07a; }
+.log .detail { color: var(--term-dim); }
+.log .report { color: #a9d6e8; }
+
+/* ---------- settings ---------- */
+.field { margin-bottom: 10px; }
+.field label { display: block; font-size: 12px; color: var(--ink-2); margin-bottom: 3px; }
+.field input[type=text], .field select {
+  width: 100%; padding: 6px 8px; border: 1px solid var(--line); border-radius: 3px;
+  background: var(--ground); color: var(--ink); font: 12.5px var(--mono);
+}
+.field input:focus, .field select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.field .with-btn { display: flex; gap: 5px; }
+.field .with-btn input { flex: 1; min-width: 0; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 10px; }
+.check { display: flex; align-items: center; gap: 8px; margin: 10px 0; font-size: 13px; }
+.check input { width: 15px; height: 15px; accent-color: var(--accent); }
+hr { border: none; border-top: 1px solid var(--line-soft); margin: 14px 0; }
+.hint { font-size: 11.5px; color: var(--ink-3); margin: 6px 0 0; }
+.badge { font-family: var(--mono); font-size: 11px; padding: 2px 7px; border-radius: 3px; }
+.badge.on { color: var(--go); background: var(--go-wash); }
+.badge.off { color: var(--warn); background: var(--warn-wash); }
+
+/* ---------- browse dialog ---------- */
+dialog {
+  border: 1px solid var(--line); border-radius: 6px; padding: 0;
+  background: var(--surface); color: var(--ink); width: min(640px, 92vw);
+  box-shadow: 0 12px 40px rgba(0,0,0,0.3);
+}
+dialog::backdrop { background: rgba(0,0,0,0.45); }
+.dlg-head { padding: 12px 16px; border-bottom: 1px solid var(--line); }
+.dlg-path { font-family: var(--mono); font-size: 12px; color: var(--ink-2);
+  word-break: break-all; margin-top: 4px; }
+.dlg-list { max-height: 46vh; overflow: auto; }
+.dlg-list button {
+  display: flex; width: 100%; text-align: left; gap: 9px; padding: 7px 16px;
+  background: none; border: none; border-bottom: 1px solid var(--line-soft);
+  color: var(--ink); cursor: pointer; font-family: var(--mono); font-size: 12.5px;
+}
+.dlg-list button:hover { background: var(--accent-wash); }
+.dlg-list .ic { color: var(--ink-3); }
+.dlg-foot { padding: 12px 16px; border-top: 1px solid var(--line); display: flex; gap: 8px; }
+.dlg-foot .spacer { flex: 1; }
+
+@media (max-width: 900px) {
+  main { grid-template-columns: 1fr; }
+  .right { border-left: none; border-top: 1px solid var(--line); }
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">curbtool <span>ingest</span></div>
+  <button class="btn" id="btn-add">Add folder…</button>
+  <button class="btn ghost" id="btn-clear">Clear</button>
+  <div style="width:1px;height:22px;background:var(--line)"></div>
+  <button class="btn" id="btn-check" title="Dry run: reads telemetry, writes nothing">
+    Check <small>1</small>
+  </button>
+  <button class="btn primary" id="btn-run" title="Extract frames and upload">
+    Start <small>2</small>
+  </button>
+  <button class="btn danger" id="btn-cancel" disabled>Cancel</button>
+  <div class="spacer"></div>
+  <button class="btn ghost" id="btn-frames">Open frames</button>
+  <button class="btn ghost" id="btn-work">Open work folder</button>
+</header>
+
+<div class="status">
+  <span class="dot" id="dot"></span>
+  <strong id="status-text">idle</strong>
+  <span class="activity" id="activity"></span>
+</div>
+<div class="bar"><div id="bar"></div></div>
+
+<main>
+  <div class="left">
+    <div class="files-wrap">
+      <table id="files-table" hidden>
+        <thead><tr>
+          <th>File</th><th class="num">Length</th><th>LRV</th>
+          <th>Status</th><th>Progress</th><th>Result</th>
+        </tr></thead>
+        <tbody id="files"></tbody>
+      </table>
+      <div class="empty" id="files-empty">
+        <p>No footage loaded. Add the folder you copied the camera card into —
+        the chapters are the <code>.MP4</code> files.</p>
+        <button class="btn primary" id="btn-add-2">Add folder…</button>
+      </div>
+    </div>
+
+    <div class="problems" id="problems"></div>
+
+    <div class="log-wrap">
+      <div class="log-head">
+        <span class="panel-title" style="margin:0">Log</span>
+        <div class="spacer" style="flex:1"></div>
+        <button class="btn ghost" id="btn-copy" style="padding:3px 9px;font-size:12px">Copy</button>
+      </div>
+      <pre class="log" id="log"></pre>
+    </div>
+  </div>
+
+  <aside class="right">
+    <h2 class="panel-title">Inputs</h2>
+    <div class="field">
+      <label for="s-observations_csv">Observation CSV</label>
+      <div class="with-btn">
+        <input type="text" id="s-observations_csv" data-setting="observations_csv" spellcheck="false">
+        <button class="btn ghost" data-browse="observations_csv" title="Browse">…</button>
+      </div>
+    </div>
+    <div class="field">
+      <label for="s-gnss_csv">Phone GNSS CSV <span style="color:var(--ink-3)">(optional)</span></label>
+      <div class="with-btn">
+        <input type="text" id="s-gnss_csv" data-setting="gnss_csv" spellcheck="false">
+        <button class="btn ghost" data-browse="gnss_csv" title="Browse">…</button>
+      </div>
+    </div>
+    <div class="field">
+      <label for="s-campaign">Campaign</label>
+      <input type="text" id="s-campaign" data-setting="campaign" spellcheck="false">
+      <p class="hint">Part of every database identifier. Set it once; changing it
+      later creates a second copy of the campaign.</p>
+    </div>
+
+    <hr>
+    <h2 class="panel-title">Matching</h2>
+    <div class="grid2">
+      <div class="field">
+        <label for="s-clock_offset_s">Clock offset (s)</label>
+        <input type="text" id="s-clock_offset_s" data-setting="clock_offset_s">
+      </div>
+      <div class="field">
+        <label for="s-stop_speed_mps">Stop speed (m/s)</label>
+        <input type="text" id="s-stop_speed_mps" data-setting="stop_speed_mps">
+      </div>
+      <div class="field">
+        <label for="s-stop_min_duration_s">Min stop (s)</label>
+        <input type="text" id="s-stop_min_duration_s" data-setting="stop_min_duration_s">
+      </div>
+      <div class="field">
+        <label for="s-max_frames">Max frames</label>
+        <input type="text" id="s-max_frames" data-setting="max_frames">
+      </div>
+    </div>
+
+    <hr>
+    <h2 class="panel-title">Output</h2>
+    <div class="grid2">
+      <div class="field">
+        <label for="s-frame_width">Frame width (px)</label>
+        <input type="text" id="s-frame_width" data-setting="frame_width">
+      </div>
+      <div class="field">
+        <label for="s-proxy_source">Video</label>
+        <select id="s-proxy_source" data-setting="proxy_source">
+          <option value="none">none — frames only (~1 min/chapter)</option>
+          <option value="lrv">lrv — camera's own copy (seconds)</option>
+          <option value="auto">auto — lrv, else transcode</option>
+          <option value="hd">hd — full transcode (10–20 min/chapter)</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="s-proxy_height">Proxy height</label>
+        <input type="text" id="s-proxy_height" data-setting="proxy_height">
+      </div>
+      <div class="field">
+        <label for="s-proxy_bitrate_kbps">Proxy kbit/s</label>
+        <input type="text" id="s-proxy_bitrate_kbps" data-setting="proxy_bitrate_kbps">
+      </div>
+    </div>
+    <div class="field">
+      <label for="s-work_dir">Work folder</label>
+      <div class="with-btn">
+        <input type="text" id="s-work_dir" data-setting="work_dir" spellcheck="false">
+        <button class="btn ghost" data-browse="work_dir" title="Browse">…</button>
+      </div>
+    </div>
+    <label class="check">
+      <input type="checkbox" id="s-single_frame" data-setting="single_frame">
+      One image per observation, named after its CSV row
+    </label>
+    <p class="hint">Off: a folder of frames around each stop. On: a single picture
+      taken at the middle of the stop, written straight into <code>frames\</code>
+      as <code>row184.jpg</code> — row 184 of the observations CSV.</p>
+    <label class="check">
+      <input type="checkbox" id="s-upload" data-setting="upload">
+      Upload to Supabase <span class="badge" id="sb-badge">…</span>
+    </label>
+    <p class="hint" id="proxy-warn" hidden></p>
+    <label class="check">
+      <input type="checkbox" id="opt-force">
+      Re-process files already marked complete
+    </label>
+    <p class="hint">Settings are saved to <code>~/.curbtool.json</code> as you change them.</p>
+  </aside>
+</main>
+
+<dialog id="browse">
+  <div class="dlg-head">
+    <strong id="dlg-title">Choose a folder</strong>
+    <div class="dlg-path" id="dlg-path"></div>
+  </div>
+  <div class="dlg-list" id="dlg-list"></div>
+  <div class="dlg-foot">
+    <button class="btn ghost" id="dlg-up">Up</button>
+    <div class="spacer"></div>
+    <button class="btn ghost" id="dlg-cancel">Cancel</button>
+    <button class="btn primary" id="dlg-pick">Use this folder</button>
+  </div>
+</dialog>
+
+<script>
+const TOKEN = new URLSearchParams(location.search).get("t") || "";
+const $ = (id) => document.getElementById(id);
+let cursor = 0, settings = {}, browseMode = null, browsePath = "", stickLog = true;
+
+async function api(path, body) {
+  const res = await fetch(path, {
+    method: body === undefined ? "GET" : "POST",
+    headers: { "X-Curbtool-Token": TOKEN, "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (res.status === 403) { document.body.innerHTML =
+    "<p style='padding:40px;font:14px sans-serif'>This page lost its access token. " +
+    "Close it and open the link the tool printed in the terminal.</p>"; throw new Error("403"); }
+  return res.json();
+}
+
+/* ---------- rendering ---------- */
+
+function fmtDuration(s) {
+  if (s === null || s === undefined) return "…";
+  if (!s) return "—";
+  const m = Math.floor(s / 60), sec = Math.round(s % 60);
+  return `${m}:${String(sec).padStart(2, "0")}`;
+}
+
+function renderFiles(files) {
+  $("files-table").hidden = files.length === 0;
+  $("files-empty").hidden = files.length > 0;
+  $("files").innerHTML = files.map((f) => `
+    <tr>
+      <td class="name">${esc(f.name)}</td>
+      <td class="num">${fmtDuration(f.duration_s)}</td>
+      <td class="num">${f.lrv === null ? "…" : f.lrv ? "yes" : "—"}</td>
+      <td><span class="pill ${f.status}">${f.status}</span></td>
+      <td>${["done","running"].includes(f.status)
+            ? `<div class="minibar"><div style="width:${Math.round(f.fraction*100)}%"></div></div>`
+            : ""}</td>
+      <td class="num" style="text-align:left">${esc(f.detail || "")}</td>
+    </tr>`).join("");
+}
+
+function renderProblems(problems) {
+  $("problems").innerHTML = problems.map((p) => `
+    <div class="problem ${p.fatal ? "" : "soft"}">
+      <span class="code">${esc(p.code)}</span>
+      <div class="body">
+        <h3>${esc(p.title)}${p.where ? ` <span class="where">· ${esc(p.where)}</span>` : ""}</h3>
+        <p>${esc(p.meaning)}</p>
+        <p class="fix"><strong>Do this:</strong> ${esc(p.fix)}</p>
+        <div class="detail">${esc(p.detail)}</div>
+      </div>
+    </div>`).join("");
+}
+
+function appendLog(events) {
+  if (!events.length) return;
+  const log = $("log");
+  stickLog = log.scrollTop + log.clientHeight >= log.scrollHeight - 24;
+  log.insertAdjacentHTML("beforeend", events.map((e) =>
+    `<span class="t">${e.at}</span> <span class="${e.kind}">${esc(e.text)}</span>\n`).join(""));
+  if (stickLog) log.scrollTop = log.scrollHeight;
+}
+
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"]/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+
+function applySettings(s) {
+  settings = s;
+  document.querySelectorAll("[data-setting]").forEach((el) => {
+    const key = el.dataset.setting;
+    if (!(key in s)) return;
+    if (el.type === "checkbox") el.checked = !!s[key];
+    else if (document.activeElement !== el) el.value = s[key];
+  });
+}
+
+function render(state) {
+  renderFiles(state.files);
+  renderProblems(state.problems);
+  appendLog(state.events);
+  if (state.events.length) cursor = state.cursor;
+
+  const busy = state.busy;
+  $("btn-check").disabled = busy || !state.files.length;
+  $("btn-run").disabled = busy || !state.files.length;
+  $("btn-cancel").disabled = !busy;
+  $("btn-clear").disabled = busy;
+  $("btn-add").disabled = busy;
+
+  const fatal = state.problems.some((p) => p.fatal);
+  $("dot").className = "dot " + (busy ? "busy"
+    : fatal ? "problem"
+    : state.check && state.check.ready ? "ready" : "");
+  $("status-text").textContent = busy ? state.status
+    : state.check ? (state.check.ready ? "ready to ingest" : "not ready")
+    : state.summary ? "finished" : "idle";
+  $("activity").textContent = state.activity || "";
+  $("bar").style.width = Math.round(state.progress * 100) + "%";
+
+  // Say out loud what a full transcode will cost before Start is pressed.
+  const source = state.settings.proxy_source;
+  const warn = $("proxy-warn");
+  if (source === "hd" && state.files.length > 1) {
+    warn.hidden = false;
+    warn.style.color = "var(--warn)";
+    warn.textContent = `Transcoding ${state.files.length} chapters from HD will take `
+      + `hours. "none" extracts the frames in about a minute each, and video can be `
+      + `added later with backfill without redoing them.`;
+  } else {
+    warn.hidden = true;
+  }
+
+  const sb = $("sb-badge");
+  sb.textContent = state.supabase.configured ? "configured" : "not configured";
+  sb.className = "badge " + (state.supabase.configured ? "on" : "off");
+  if (!document.querySelector("[data-setting]:focus")) applySettings(state.settings);
+}
+
+/* ---------- polling ---------- */
+
+async function poll() {
+  try { render(await api(`/api/state?since=${cursor}&t=${encodeURIComponent(TOKEN)}`)); }
+  catch (e) { /* the server may be shutting down; the next tick retries */ }
+}
+setInterval(poll, 600);
+
+/* ---------- actions ---------- */
+
+$("btn-check").onclick = () => api("/api/check", {}).then(poll);
+$("btn-run").onclick = () => api("/api/ingest", { force: $("opt-force").checked }).then(poll);
+$("btn-cancel").onclick = () => api("/api/cancel", {}).then(poll);
+$("btn-clear").onclick = () => api("/api/files/clear", {}).then(poll);
+$("btn-work").onclick = () => api("/api/open", { what: "work" });
+$("btn-frames").onclick = () => api("/api/open", { what: "frames" });
+$("btn-copy").onclick = () => navigator.clipboard?.writeText($("log").textContent);
+$("btn-add").onclick = () => openBrowse("files");
+$("btn-add-2").onclick = () => openBrowse("files");
+
+document.querySelectorAll("[data-browse]").forEach((btn) => {
+  btn.onclick = () => openBrowse(btn.dataset.browse);
+});
+
+document.querySelectorAll("[data-setting]").forEach((el) => {
+  const push = () => {
+    const key = el.dataset.setting;
+    const value = el.type === "checkbox" ? el.checked : el.value;
+    api("/api/settings", { [key]: value }).then((r) => { settings = r.settings; });
+  };
+  el.addEventListener("change", push);
+  if (el.tagName === "INPUT" && el.type === "text") el.addEventListener("blur", push);
+});
+
+/* ---------- folder picker ----------
+   A browser cannot hand a real path to the page, so the server lists folders
+   and the page shows them. */
+
+async function openBrowse(mode) {
+  browseMode = mode;
+  const wantsFolder = mode === "files" || mode === "work_dir";
+  const start = mode === "files" ? settings.last_folder : (settings[mode] || "");
+  $("dlg-title").textContent = mode === "files" ? "Choose the footage folder"
+    : mode === "work_dir" ? "Choose the work folder"
+    : mode === "gnss_csv" ? "Choose the phone GNSS log"
+    : "Choose the observation CSV";
+  $("dlg-pick").hidden = !wantsFolder;
+  $("dlg-pick").textContent = mode === "files" ? "Add every chapter here"
+                                               : "Use this folder";
+  await loadBrowse(start ? dirOf(start) : "");
+  $("browse").showModal();
+}
+
+function dirOf(p) { return String(p || "").replace(/[\\/][^\\/]*$/, ""); }
+
+function browseKind() {
+  if (browseMode === "files") return "video";
+  if (browseMode === "work_dir") return "dir";
+  return "csv";
+}
+
+async function loadBrowse(path) {
+  const data = await api(`/api/browse?path=${encodeURIComponent(path || "")}` +
+                         `&kind=${browseKind()}&t=${encodeURIComponent(TOKEN)}`);
+  browsePath = data.path || "";
+  $("dlg-path").textContent = browsePath + (data.error ? `  — ${data.error}` : "");
+
+  const rows = [
+    ...(data.roots || []).map((r) => ({ ic: "▸", name: r, path: r, kind: "dir" })),
+    ...(data.dirs || []).map((d) => ({ ic: "▸", name: d.name, path: d.path, kind: "dir" })),
+    ...(data.files || []).map((f) => ({ ic: "•", name: f.name, path: f.path, kind: "file" })),
+  ];
+  $("dlg-list").innerHTML = rows.length
+    ? rows.map((r, i) => `<button data-i="${i}"><span class="ic">${r.ic}</span>${esc(r.name)}</button>`).join("")
+    : `<div style="padding:16px;color:var(--ink-3)">nothing here</div>`;
+
+  $("dlg-list").querySelectorAll("button").forEach((b) => {
+    const row = rows[+b.dataset.i];
+    b.onclick = async () => {
+      if (row.kind === "dir") return loadBrowse(row.path);
+      // A file was clicked: a chapter to add, or a CSV to select.
+      if (browseMode === "files") await api("/api/files/add", { paths: [row.path] });
+      else await api("/api/settings", { [browseMode]: row.path });
+      $("browse").close();
+      poll();
+    };
+  });
+}
+
+$("dlg-up").onclick = () => loadBrowse(dirOf(browsePath) || browsePath);
+$("dlg-cancel").onclick = () => $("browse").close();
+$("dlg-pick").onclick = async () => {
+  if (browseMode === "files") await api("/api/files/add", { paths: [browsePath] });
+  else await api("/api/settings", { [browseMode]: browsePath });
+  $("browse").close();
+  poll();
+};
+
+poll();
+</script>
+</body>
+</html>
